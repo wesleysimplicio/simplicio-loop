@@ -570,6 +570,13 @@ def preflight_payload(repo: str, *, strict: bool = False, env: Optional[Mapping[
         "all_present": all_present,
         "operators": operators,
         "required_operators": required,
+        "mapper_required": True,
+        "mapper_context_policy": {
+            "preparation": "central",
+            "workers": "consume_matching_generation_read_only",
+            "stale_context": "block_and_refresh_centrally",
+            "provider_cache": "unverified_until_provider_usage_receipt",
+        },
         "missing_operators": missing,
         "runtime_available": runtime_available,
         "runtime_operational": runtime_available,

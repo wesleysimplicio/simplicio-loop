@@ -21,9 +21,10 @@ def run_live(
     workspace: str,
     agent_command: Sequence[str],
     action_gate: bool,
+    dry_run: bool = False,
     cancel: bool = False,
     checkpoint: str = "",
-    max_workers: int = 1,
+    max_workers: int = 0,
     retry_budget: int = 1,
     source_factory: Callable[..., Any] = GitHubSourceAdapter,
     intake_factory: Callable[..., Any] = GitHubDrainIntake,
@@ -33,11 +34,40 @@ def run_live(
     queue_factory: Callable[..., Any] = WorktreeQueue,
 ) -> dict[str, Any]:
     root = Path(workspace).resolve()
+    if max_workers <= 0:
+        from .economy_profile import recommend_operator_workers
+        max_workers = recommend_operator_workers()
     batch = hashlib.sha256(request.encode("utf-8")).hexdigest()[:16]
     journal_dir = root / ".simplicio" / "tasks-run" / batch / "journals"
+    cancel_path = journal_dir / "cancel.json"
+    if dry_run:
+        if cancel:
+            return {
+                "schema": "simplicio.tasks-orchestrator/v1",
+                "plan": None,
+                "idempotency_key": hashlib.sha256(request.encode("utf-8")).hexdigest(),
+                "state": "blocked",
+                "reason": "dry_run_read_only",
+                "cancelled": [],
+                "evidence": [],
+                "dry_run": True,
+            }
+        if cancel_path.exists():
+            return {
+                "schema": "simplicio.tasks-orchestrator/v1",
+                "plan": None,
+                "idempotency_key": hashlib.sha256(request.encode("utf-8")).hexdigest(),
+                "state": "cancelled",
+                "reason": "persisted_cancel_observed",
+                "cancelled": ["persisted_cancel"],
+                "evidence": [],
+                "dry_run": True,
+            }
+        # The orchestrator's existing action-gate-closed path is the
+        # read-only production dry-run implementation.
+        action_gate = False
     if cancel:
         journal_dir.mkdir(parents=True, exist_ok=True)
-        cancel_path = journal_dir / "cancel.json"
         cancel_path.write_text('{"reason":"cancel_requested","schema":"simplicio.tasks-cancel/v1"}', encoding="utf-8")
         return {
             "schema": "simplicio.tasks-orchestrator/v1",
@@ -48,7 +78,6 @@ def run_live(
             "cancelled": ["cancel_requested"],
             "evidence": [],
         }
-    cancel_path = journal_dir / "cancel.json"
     if cancel_path.exists():
         acknowledged = journal_dir / "cancel.ack.json"
         try:
@@ -61,7 +90,13 @@ def run_live(
                     "state": "cancelled", "reason": "persisted_cancel_enforced",
                     "cancelled": ["persisted_cancel"], "cancel_ack": str(acknowledged),
                     "evidence": []}
-    pipeline = pipeline_factory(agent_command, str(journal_dir), host_total_slots=max_workers + 1)
+    # The production orchestrator already stops after read-only intake when the
+    # action gate is closed.  Do not construct the agent-backed pipeline first:
+    # its constructor correctly rejects an empty command, but dry-run must not
+    # require or even initialize an agent.
+    pipeline = None if dry_run else pipeline_factory(
+        agent_command, str(journal_dir), host_total_slots=max_workers + 1
+    )
     intent = parse_natural_drain_request(request)
     checkpoint_path = checkpoint or str(root / ".simplicio" / "tasks-run" / batch / "intake.json")
     source = source_factory(intent.owner, intent.repo, publish_comment_fn=_forbidden_publish)

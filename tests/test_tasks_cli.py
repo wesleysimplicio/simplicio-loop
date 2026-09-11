@@ -20,6 +20,7 @@ def test_tasks_run_dry_run_executes_real_discovery(monkeypatch, tmp_path, capsys
     assert captured["request"] == request
     assert captured["action_gate"] is False
     assert captured["agent_command"] == ()
+    assert captured["dry_run"] is True
 
 def test_tasks_run_requires_action_gate(capsys):
     assert cli.main(["tasks", "run"]) == 2

@@ -151,7 +151,6 @@ DEVCLI_REQUIRED_TOKENS = (" task", "--dry-run-task", "--json")
 # merely `which`. A dev-cli below this tuple is blocked before any mutation.
 DEVCLI_MIN_VERSION = (0, 14, 0)
 DEVCLI_REQUIRED_CAPABILITIES = ("task", "--dry-run-task", "--json", "--bound-paths", "--target", "--task-spec", "--mode")
-DEFAULT_OPERATOR_WORKERS = 6
 BATCH_SCHEMA = "simplicio.operator-batch/v1"
 BATCH_PREFLIGHT_SCHEMA = "simplicio.operator-batch-preflight/v1"
 NATIVE_PRISM_SCHEMA = "simplicio.loop.native-prism-dispatch/v1"
@@ -685,6 +684,40 @@ def _mapper_supports_command(preflight: Mapping[str, Any], command: str) -> bool
     )
 
 
+def _mapper_inspection_is_fresh(result: subprocess.CompletedProcess[str]) -> bool:
+    """Return whether Mapper's persisted inspection proves a usable fresh index."""
+    try:
+        payload = json.loads(result.stdout or "")
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(payload, Mapping):
+        return False
+    status = payload.get("status")
+    return (
+        isinstance(status, Mapping)
+        and status.get("artifacts_present") is True
+        and status.get("fresh") is True
+    )
+
+
+def _mapper_inspection_reports_stale(result: subprocess.CompletedProcess[str]) -> bool:
+    """Return true only when Mapper explicitly reports a stale/incomplete index."""
+    try:
+        payload = json.loads(result.stdout or "")
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(payload, Mapping):
+        return False
+    status = payload.get("status")
+    return (
+        isinstance(status, Mapping)
+        and (
+            status.get("artifacts_present") is not True
+            or status.get("fresh") is not True
+        )
+    )
+
+
 def _degraded_mapper_fallback_enabled() -> bool:
     """Allow explicit-target local work to continue when deep mapping is unavailable."""
     if _execution_profile() != "standalone":
@@ -1213,6 +1246,35 @@ def _mapper_operations_database(repo_path: Path) -> str:
     except (OSError, ValueError) as error:
         raise RuntimeError(f"MAPPER_OPERATIONS_DB_UNAVAILABLE:{error}") from error
 
+
+def _ensure_mapper_operations_store(
+    repo_path: Path,
+    storage_route: str | None = None,
+) -> Dict[str, Any]:
+    """Initialize Mapper's repo store on the first real Loop invocation.
+
+    The explicit ``queue --mapper-init`` command remains available for
+    operators, but a normal ``run``/``tick``/``batch`` must not require a
+    separate bootstrap command. This only performs Mapper's own idempotent
+    initialization; it does not create a Loop-owned queue or weaken any
+    receipt/lease gate.
+    """
+    selected = str(storage_route or _storage_route_requested()).strip().lower()
+    if selected != StorageRoute.MAPPER.value:
+        return {"status": "not_selected", "route": selected}
+    try:
+        from .mapper_operations import MapperOperationsAdapter
+
+        adapter = MapperOperationsAdapter(
+            _mapper_operations_database(repo_path),
+            auto_create=True,
+        )
+        result = adapter.initialize()
+    except (OSError, TypeError, ValueError, RuntimeError) as error:
+        raise RuntimeError(f"MAPPER_OPERATIONS_INIT_FAILED:{error}") from error
+    if not isinstance(result, dict):
+        raise RuntimeError("MAPPER_OPERATIONS_INIT_FAILED:invalid initialization receipt")
+    return result
 
 def _hookwall_ledger(
     repo_path: Path,
@@ -3102,6 +3164,28 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
         ],
         repo_path,
     )
+    if not rollback_sync and _mapper_inspection_reports_stale(inspect):
+        # The default Mapper route is macro-first/background.  A cold repository can
+        # still be indexing when the first inspect returns, which used to surface as
+        # a stale-artifact block and force callers to know the private sync toggle.
+        # Reconcile that normal warm-up inside the zero-config run once, then keep the
+        # existing receipt/freshness gate unchanged.
+        await_scan = _run_cmd(
+            [
+                "simplicio-mapper", "scan", ".", "--json", "--await",
+                "--timeout", mapper_timeout,
+            ],
+            repo_path,
+        )
+        if await_scan.returncode == 0:
+            scan = await_scan
+        inspect = _run_cmd(
+            [
+                "simplicio-mapper", "inspect", ".", "--json", "--await",
+                "--timeout", mapper_timeout,
+            ],
+            repo_path,
+        )
     phase_timings["inspect_wall_seconds"] = round(time.monotonic() - inspect_started, 6)
     if _mapper_supports_command(mapper_preflight, "snapshot"):
         snapshot = _run_cmd(["simplicio-mapper", "snapshot", "build", "--json", "."], repo_path)
@@ -3876,6 +3960,7 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
                     receipt=str(run_root / "stack-lock.json"),
                     message="installed stack lock frozen before Mapper scan")
         storage_route = _freeze_storage_route(run_root, run_id)
+        _ensure_mapper_operations_store(repo_path, storage_route.get("selected"))
         manifest.update({
             "storage_route_path": str(run_root / STORAGE_ROUTE_RECEIPT),
             "storage_route_hash": storage_route.get("receipt_hash", ""),
@@ -4268,6 +4353,7 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
     repo_path = Path(status["manifest"]["repo"]).resolve()
     stack_lock = _verify_run_stack_lock(run_dir)
     storage_route = _verify_storage_route(run_dir)
+    _ensure_mapper_operations_store(repo_path, storage_route.get("selected"))
     status["state"]["stack_lock"] = {
         **dict(status["state"].get("stack_lock") or {}),
         "ready": True,
@@ -4764,7 +4850,17 @@ def _conduct_run(repo: str, task_path: str, delivery: str = "verified", max_iter
     if armed["state"].get("phase") == "blocked":
         return armed
     try:
-        batch = execute_operator_batch(repo, run_id, max_workers=1, retry_budget=retry_budget, auto_fan_out=False)
+        # The public ``run`` path is intentionally zero-config: let the operator
+        # derive its worker demand from the task set and let the physical admission
+        # monitor choose the safe concurrency.  Callers that need a deterministic
+        # serial lane can still use the explicit ``batch --serial`` surface.
+        batch = execute_operator_batch(
+            repo,
+            run_id,
+            max_workers=None,
+            retry_budget=retry_budget,
+            auto_fan_out=None,
+        )
     except (OSError, TypeError, ValueError, RuntimeError) as exc:
         status = read_status(repo, run_id)
         run_dir = Path(status["run_dir"])
@@ -4778,8 +4874,52 @@ def _conduct_run(repo: str, task_path: str, delivery: str = "verified", max_iter
             status = read_status(repo, run_id)
         return status
     status = read_status(repo, run_id)
-    if batch.get("failed_task_indices") or status["state"].get("phase") == "blocked":
-        return status
+    run_dir = Path(status["run_dir"])
+    workers = list(batch.get("workers") or [])
+    non_success_workers = [
+        worker for worker in workers
+        if str(worker.get("status") or "") != "succeeded"
+    ]
+    failed_indices = list(batch.get("failed_task_indices") or [])
+    blocked_indices = list(batch.get("blocked_task_indices") or [])
+    dead_letter_indices = list(batch.get("dead_letter_task_indices") or [])
+    if (
+        failed_indices
+        or blocked_indices
+        or dead_letter_indices
+        or non_success_workers
+        or status["state"].get("phase") == "blocked"
+    ):
+        # A worker can be ``blocked``/``paused`` without appearing in
+        # ``failed_task_indices`` (for example when the physical governor
+        # terminates admission).  Do not run the independent watcher against
+        # that pre-mutation state: surface the real operator reason first.
+        state = status["state"]
+        if state.get("phase") not in {"blocked", "done", "cancelled"}:
+            first_failure = non_success_workers[0] if non_success_workers else {}
+            reason = (
+                first_failure.get("reason")
+                or first_failure.get("error")
+                or first_failure.get("reason_code")
+                or "operator batch did not produce successful worker receipts"
+            )
+            state["blockers"] = [str(reason)]
+            state["current_action"] = "operator_batch_blocked"
+            state["next_action"] = "inspect_and_recover"
+            _write_json(run_dir / "state.json", state)
+            _transition(
+                run_dir,
+                state,
+                "blocked",
+                "operator batch returned a non-success worker",
+                receipt=str(run_dir / "operator-batch.json"),
+                extra={
+                    "failed_task_indices": failed_indices,
+                    "blocked_task_indices": blocked_indices,
+                    "dead_letter_task_indices": dead_letter_indices,
+                },
+            )
+        return read_status(repo, run_id)
     # An explicitly selected quality provider runs after execution and before
     # the watcher/delivery/Completion Oracle. Once selected, it remains
     # fail-closed: there is no fallback for an unavailable or failing provider.
@@ -4833,15 +4973,17 @@ def conduct_run(repo: str, task_path: str, delivery: str = "verified", max_itera
 
 
 def _operator_worker_limit(requested: Optional[int], item_count: int) -> int:
-    """Resolve a bounded worker count without silently creating an empty pool."""
+    """Resolve logical demand; the physical admission monitor governs live work."""
     if item_count <= 0:
         return 0
     if requested is None or requested <= 0:
         raw = os.environ.get("SIMPLICIO_LOOP_OPERATOR_WORKERS", "").strip()
         try:
-            requested = int(raw) if raw else min(DEFAULT_OPERATOR_WORKERS, os.cpu_count() or 1)
+            requested = int(raw) if raw else item_count
         except ValueError:
-            requested = min(DEFAULT_OPERATOR_WORKERS, os.cpu_count() or 1)
+            raise ValueError("SIMPLICIO_LOOP_OPERATOR_WORKERS must be an integer") from None
+        if requested <= 0:
+            requested = item_count
     return max(1, min(int(requested), item_count))
 
 
@@ -5951,10 +6093,22 @@ def _mapper_journal_enabled(storage_route: StorageRoute | str | None = None) -> 
         raise StoreAdapterError("STORAGE_ROUTE_INVALID") from error
 
 
-def _dispatch_journal_backend(journal_path: Optional[Path]) -> Any:
+def _dispatch_journal_backend(
+    journal_path: Optional[Path], *, repo_root: Optional[Path] = None,
+) -> Any:
     """Select the journal from the rollout route; legacy remains pre-cutover default."""
     if _mapper_journal_enabled():
-        root = Path.cwd()
+        # Mapper operations are repository-scoped.  Using the coordinator's cwd here
+        # misroutes a zero-config run when the task repository is a fixture, worktree,
+        # or child checkout launched from another project.
+        root = Path(repo_root).resolve() if repo_root is not None else None
+        if root is None and journal_path is not None:
+            journal = Path(journal_path).resolve()
+            for parent in (journal.parent, *journal.parents):
+                if parent.name == "loop-runs" and parent.parent.name == ".simplicio":
+                    root = parent.parent.parent
+                    break
+        root = root or Path.cwd()
         return MapperRunJournal(_mapper_operations_database(root), auto_create=False)
     if journal_path is None:
         raise RuntimeError("JOURNAL_PATH_REQUIRED")
@@ -5964,11 +6118,12 @@ def _dispatch_journal_backend(journal_path: Optional[Path]) -> Any:
 def _append_dispatch_journal(
     journal_path: Optional[Path], run_id: str, kind: str,
     payload: Mapping[str, Any], idempotency_key: str,
+    *, repo_root: Optional[Path] = None,
 ) -> None:
     """Persist one idempotent batch lifecycle event in the existing RunJournal."""
     if journal_path is None:
         return
-    journal = _dispatch_journal_backend(journal_path)
+    journal = _dispatch_journal_backend(journal_path, repo_root=repo_root)
     if not journal.events(run_id):
         journal.append(
             run_id, "run_started", {"scope": "operator_batch"},
@@ -5979,13 +6134,15 @@ def _append_dispatch_journal(
     )
 
 
-def _dispatch_journal_recovery(journal_path: Optional[Path], run_id: str) -> List[int]:
+def _dispatch_journal_recovery(
+    journal_path: Optional[Path], run_id: str, *, repo_root: Optional[Path] = None,
+) -> List[int]:
     """Return task indexes with a durable start but no terminal event."""
     if journal_path is None or (
         not _mapper_journal_enabled() and not journal_path.exists()
     ):
         return []
-    events = _dispatch_journal_backend(journal_path).events(run_id)
+    events = _dispatch_journal_backend(journal_path, repo_root=repo_root).events(run_id)
     active: Dict[int, bool] = {}
     for event in events:
         payload = event.get("payload") or {}
@@ -6036,6 +6193,10 @@ def dispatch_operator_batch(
     # and permanently block every resumed batch that contains even one completed item.
     journal_path: Optional[Path] = None
     durable_journal_path: Optional[Path] = None
+    repo_root_by_run = {
+        str(item["run_id"]): Path(item["repo"]).resolve()
+        for item in normalized
+    }
     if journal_dir:
         journal_path = Path(journal_dir).resolve() / "operator-batch.jsonl"
         journal_path.parent.mkdir(parents=True, exist_ok=True)
@@ -6049,7 +6210,11 @@ def dispatch_operator_batch(
     recovery_pending_by_run: Dict[str, set[int]] = {}
     if durable_journal_path is not None:
         for run_id in {item["run_id"] for item in normalized}:
-            pending_indices = set(_dispatch_journal_recovery(durable_journal_path, run_id))
+            pending_indices = set(_dispatch_journal_recovery(
+                durable_journal_path,
+                run_id,
+                repo_root=repo_root_by_run.get(str(run_id)),
+            ))
             if pending_indices:
                 recovery_pending_by_run[run_id] = pending_indices
     prior: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
@@ -6246,6 +6411,7 @@ def dispatch_operator_batch(
                 "worker_id": item["worker_id"], "isolation_key": item["isolation_key"],
             },
             f"dispatch:{item['task_id']}:queued",
+            repo_root=Path(item["repo"]).resolve(),
         )
     for run_id, task_indices in recovery_pending_by_run.items():
         for task_index in sorted(task_indices):
@@ -6256,6 +6422,7 @@ def dispatch_operator_batch(
                     "reason_code": "unknown_effect_reconciliation_required",
                 },
                 f"dispatch:{run_id}:{task_index}:recovery-pending",
+                repo_root=repo_root_by_run.get(str(run_id)),
             )
     started = _now()
     records: Dict[Tuple[str, str, int], Dict[str, Any]] = dict(prior)
@@ -6770,6 +6937,11 @@ def execute_operator_batch(
     if (status["state"].get("maintenance") or {}).get("disposition") == "backlog_only":
         raise RuntimeError("maintenance deferred: operator batch is blocked until explicit resume")
     run_dir = Path(status["run_dir"])
+    repo_path = Path(status["manifest"].get("repo") or repo).resolve()
+    _ensure_mapper_operations_store(
+        repo_path,
+        status["manifest"].get("storage_route"),
+    )
     try:
         contract = _require_json_receipt(run_dir / "task-contract.json", "task contract")
         receipts = _validate_run_receipts(

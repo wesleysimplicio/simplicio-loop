@@ -39,10 +39,10 @@ def _fan_out_enabled() -> bool:
 
 
 def _max_workers() -> int:
-    try:
-        return max(1, int(os.environ.get(_ENV_MAX_WORKERS, "4")))
-    except ValueError:
-        return 4
+    from simplicio_loop.economy_profile import recommend_operator_workers
+    raw = os.environ.get(_ENV_MAX_WORKERS, "0")
+    requested = int(raw)
+    return requested if requested > 0 else recommend_operator_workers()
 
 
 def _lease_seconds() -> float:

@@ -12,6 +12,9 @@ Use the most specific form, such as `simplicio-loop queue top --help` or
 | `issue-factory` | Discover ready work items from a configured source adapter. |
 | `simplicio-ecosystem-doctor` | Inspect installed operator versions, capabilities, and route readiness. |
 | `simplicio-loop-tools` | Run the consumer/tooling surface for Loop artifacts. |
+| `simplicio-capabilities` | Inspect the capability catalog; use installed `--help` for selectors. |
+| `simplicio-loop-stack` | Standalone stack command entry point. |
+| `simplicio-route` | Standalone routing command entry point. |
 | `simplicio-hub` | Start or inspect the local Hub daemon (`serve`, `doctor`). |
 | `simplicio-remote-queue-server` | Serve the remote task queue. |
 | `simplicio-remote-worker` | Claim, enqueue, cancel, or serve remote work. |
@@ -38,6 +41,8 @@ Use the most specific form, such as `simplicio-loop queue top --help` or
 | `inspect` | Inspect MapperStore capabilities and storage routing. |
 | `map` | Inspect or build map-service receipts. |
 | `preflight` | Verify Mapper, Dev CLI, Runtime, and Fast operators. |
+| `economy` | Inspect, print, or apply the environment profile; inspect before applying, especially in CLI-only mode. |
+| `ecc doctor` | Diagnose the optional ECC integration. |
 | `deploy` | Plan a gated deployment; `--apply` is explicit. |
 | `verify` | Run independent watcher and delivery gates. |
 | `progress` | Render run progress as text, JSON, Markdown, or ANSI. |
@@ -64,6 +69,35 @@ Use the most specific form, such as `simplicio-loop queue top --help` or
 | `release-train rollback` | Atomically restore a previous stable composition. |
 | `hub-drain-plan` | Read-only GitHub drain intake. |
 | `hub-drain-admit` | Admit a held final checkpoint without dispatching it. |
+
+### Zero-config start
+
+```bash
+simplicio-loop run --task task.md --repo .
+simplicio-loop batch RUN_ID
+```
+
+`run` and `batch` initialize the Mapper-owned operations store when required,
+use the Mapper handoff, reconcile one normal cold-start inspection internally when
+the index is still warming, and derive worker demand from the task set. Physical
+admission still controls safe CPU/RAM/disk concurrency; `--serial` is an explicit
+conflict/dependency choice, not the default. Receipts and validation gates remain
+mandatory.
+
+## Prism and wave are not top-level subcommands
+
+`simplicio-prism` is the routing skill in
+`.claude/skills/simplicio-prism/SKILL.md`, not `simplicio-loop prism`.
+`python3 scripts/arm_drain_prism.py --help` describes the drain arming script.
+It writes a scratchpad and environment recommendations; it does not start
+agents or deliver tasks. Its source adapter queries GitHub, so arming a local
+simulated queue does not certify Jira/Azure DevOps integration.
+
+A wave is a batch followed by lease/result reconciliation before the next batch.
+`simplicio_loop.prism_scheduler.PrismScheduler.execute` dispatches admitted
+workers in task groups with a barrier between batches. It does not perform
+source edits itself: workers and independent validation must be bound.
+See [the benchmark report](QUEUE_BENCHMARK_PROTOCOL.md) for measured coverage.
 
 ## Offline journal replay
 
@@ -95,6 +129,7 @@ missing, incompatible, or non-activating Runtime decision.
 3. `simplicio-dev-cli --help` → `task --help` for the governed edit and verification step.
 4. `simplicio-loop preflight --help`, focused tests, then `simplicio-loop verify --help`.
 
-The current coordinated train is Mapper `0.26.10`, Dev CLI `0.18.6`, Fast
-`2.0.22`, and Loop `3.38.30`. When a command is added, add a meaningful
+The benchmark verified installed Loop `3.43.10` on 2026-09-11. Other component
+versions must be read from their installed release receipts, not inferred from
+an older coordinated-train list. When a command is added, add a meaningful
 `help=` string, document it here, and add a `--help` regression check.

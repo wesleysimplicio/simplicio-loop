@@ -812,6 +812,143 @@ exit 0) when `gh`/network is unavailable, so an offline dev environment never lo
 `update.sh` stashes local edits, fast-forwards `main`, reinstalls from the fresh source, restarts the
 launchd/systemd services so they run the new code, and prints the live stack + savings.
 
+## 🧭 CLI command map — what each command does
+
+### Required Mapper context and automatic machine capacity
+
+Every Loop execution workflow requires **Simplicio Mapper**, including standalone,
+sequential, Prism/wave and Fast-assisted execution. Prepare context centrally and
+bind workers to its current generation and digest. Fast is an optional accelerator;
+Runtime remains optional for ordinary orchestration. Missing or stale Mapper
+context blocks work until central preparation succeeds.
+
+The intended worker default is automatic physical admission from available machine
+capacity, preserving foreground responsiveness. The source changes remove fixed
+defaults in batch/tasks/fan-out entrypoints; validation is still in progress and
+these edits are not part of the installed 3.43.10 release yet.
+
+Mapper context reuse does not itself prove a provider cache hit. Report token and
+cost savings only from attributable provider usage and passing quality gates.
+The fastest/cheapest production route is **not yet established**. See the
+[ten-task benchmark protocol, command sequence and evidence status](docs/QUEUE_BENCHMARK_PROTOCOL.md)
+before using historical synthetic scheduler measurements as a recommendation.
+
+The main `simplicio-loop` entry point is the user-facing control surface for planning, executing, verifying, and delivering work. Use the most specific `--help` for the exact options available in the installed version.
+
+**Standalone by design.** Runtime is optional: without it, Loop uses its own scheduler/hooks plus the Mapper, Fast, and Dev CLI operators. When Runtime is available, it adds governed activation, physical admission, gates, receipts, and reconciliation; it does not replace the Loop.
+
+### Zero-config execution
+
+The normal start path requires only the task and repository scope:
+
+```bash
+simplicio-loop run --task task.md --repo .
+```
+
+Loop initializes the Mapper-owned operations store when needed, runs the required
+Mapper handoff, reconciles one normal cold-start inspection internally when the index is
+still warming, derives worker demand from the task set, and lets physical CPU/RAM/disk
+admission choose the safe concurrency. For an existing run, `simplicio-loop batch RUN_ID`
+applies the same defaults; `--serial` is reserved for explicit dependency or conflict
+cases. Missing Mapper receipts, stale plans, invalid targets, failed workers, or unsafe
+machine pressure remain visible stop conditions and are never silently bypassed.
+
+> **At a glance:** `plan` creates a frozen task contract → `run` executes it with bounded iterations → `verify` checks the evidence independently → `deliver` reconciles the result with the source of record.
+
+| Area | Commands | What they do |
+|---|---|---|
+| Install and utilities | `install`, `dashboard`, `learn` | Install the bundled skills/hooks; open or stop the token-monitor dashboard; derive and persist a retrospective from completed runs. |
+| Intake and planning | `task`, `prototype`, `plan`, `orient` | Validate/preview task contracts; route prototype planning; compile Markdown into a frozen contract; build bounded Mapper/Fast context and an orientation receipt. |
+| Execution | `run`, `tick`, `batch`, `single-task-fast` | Arm and execute a task with evidence; execute one planned task through Dev CLI; dispatch ready tasks through bounded isolated workers; select the local-first route for one task. |
+| Run lifecycle | `status`, `progress`, `resume`, `cancel`, `verify`, `oracle`, `checkpoint` | Inspect a run; render progress as text/JSON/Markdown/ANSI; resume or cancel non-terminal work; run independent watcher/delivery gates; evaluate completion/parity; manage Fast V3 checkpoints. |
+| Repository and operators | `preflight`, `map`, `inspect`, `doctor`, `stack`, `extensions`, `retrieve` | Check Mapper/Dev CLI/Runtime/Fast readiness; inspect map-service receipts; inspect MapperStore capabilities; diagnose stack/source/resource/storage; lock or verify installed components; verify extension handshakes; retrieve tee-cache results. |
+| Queues and coordination | `queue`, `drain`, `agent-slots`, `generation-broker`, `ledger`, `hub-drain-plan`, `hub-drain-admit` | Operate the durable queue; evaluate or persist queue-drain receipts; inspect/reclaim Loop capacity; reconcile generation bindings; replay/validate the operational ledger; plan or admit GitHub drain work. |
+| Delivery and source control | `deliver`, `decide`, `sync-source`, `findings`, `maintenance-deferred`, `defer-maintenance` | Reconcile delivery with source evidence; apply a human decision and invalidate dependent artifacts; requery external source state; list/report/reconcile/diagnose/import findings; record deferred maintenance. `defer-maintenance` is the alias form. |
+| Economy, safety, and deployment | `economy`, `ecc`, `deploy`, `release-train` | Inspect/print/apply the economy-parallel environment; verify ECC provenance and safety policy; plan a gated deployment (`--apply` is explicit); validate release manifests and ecosystem drift. |
+
+### Candidate governed flow for 10 tasks — not yet a measured winner
+
+Ten tasks are above the three-task direct-parallel threshold, so the Loop routes them through a Prism wave: isolated worktrees, leases, a wave barrier, and serialized writes. This wave works in standalone mode; when Runtime is available, Runtime governs activation and physical admission while Prism coordinates the wave.
+
+```bash
+# 1. If using Runtime, ask its activation authority (optional integration)
+simplicio loop decide --task "complete these 10 tasks" --repo . --json
+
+# 2. Inspect the profile before applying environment changes
+# 3.43.10 recommends MCP-required flags; do not apply it blindly in CLI-only mode.
+simplicio-loop economy status --json
+
+# 3. Block until the required operators and strict mutation policy are ready
+simplicio-loop preflight --strict --json
+
+# 4. Survey and enrich context through the bound operators
+simplicio-mapper scan . --sync --json
+simplicio-mapper inspect . --json
+simplicio-mapper handoff . --task-file task.md --execution-context --json
+simplicio-fast understand --repo .
+
+# 5. Arm the drain scratchpad; this does NOT start workers
+# The CLI resolves slots=0 via its machine-capacity recommendation.
+python3 scripts/arm_drain_prism.py --repo . --slots 0 --batch-size 10 --json
+
+# 6. Each task follows claim → implement → focused gate → evidence → PR/merge
+#    The next wave starts only after reconcile-before-next.
+```
+
+Do not interpret ten logical tasks as ten unrestricted processes: physical CPU/RAM/backpressure limits are still enforced, and writes are serialized by path. For only one to three tasks, use direct parallelism instead of Prism.
+
+### Where Prism fits
+
+`simplicio-prism` is a routing skill/layer, not a top-level `simplicio-loop prism` subcommand. It classifies the work and composes Mapper, Fast, Loop, Dev CLI, and Runtime. The concrete drain-wave operator is `scripts/arm_drain_prism.py`; Runtime's `simplicio loop decide` remains the authority for Loop activation.
+
+A wave ends with lease/result reconciliation before the next group is admitted.
+Arming is preparation, not execution. In standalone operation Runtime/MCP is
+optional; Mapper remains mandatory. See the [Prism/wave interface details](docs/CLI_COMMANDS.md#prism-and-wave-are-not-top-level-subcommands).
+
+**Measured benchmark status (2026-09-11):** ten simulated tasks pass the independent
+verifier after real OpenRouter proposals and native edits. This is a diagnostic
+composed route, not a completed serial/Prism/Fast comparison. No fastest or
+cheapest standard is proven. The [detailed report](docs/QUEUE_BENCHMARK_PROTOCOL.md)
+records failures, retries, commands, receipts and the remaining qualification gates.
+Open the [charts and measured command tables](.lavish/queue-benchmark-20260911/report.html)
+or the [raw metrics and receipt hashes](.lavish/queue-benchmark-20260911/summary.json).
+
+The [release qualification results](docs/BENCHMARK_RELEASE_QUALIFICATION.md)
+separately record the restarted native CLI probes, exact commands, CPU/RAM,
+and blockers. Failed admission, dry-run, and time-to-failure never qualify as
+completed tasks or a performance winner.
+
+Important nested command surfaces:
+
+- `queue`: `status`, `top`, `drain`, `resume`, `doctor`, `reclaim`, `migrate`, `gc`, `inspect`, `cancel`.
+- `findings`: `list`, `report`, `reconcile`, `doctor`, `import`.
+- `economy`: `status`, `print`, `apply`.
+- `stack`: `lock`, `verify`; `extensions` and `ecc` each expose `doctor`.
+- `release-train`: `check` validates component/ecosystem release schemas and local drift.
+
+Typical single-task commands:
+
+```bash
+simplicio-loop preflight --repo . --json
+simplicio-loop orient --task "understand this repository" --repo .
+simplicio-loop plan --task task.md --out contract.json
+simplicio-loop run --task task.md --repo . --max-iterations 5
+simplicio-loop status --repo . --text
+simplicio-loop progress --repo . --format markdown --once
+simplicio-loop queue status
+simplicio-loop verify <run_id>
+```
+
+The complete command reference is [`docs/CLI_COMMANDS.md`](docs/CLI_COMMANDS.md). The command surface can vary by installed package version, so check `simplicio-loop --version` and `simplicio-loop --help`; the current repository source is `3.43.10`.
+
+The restarted comparison includes `run`, `batch`, `batch --serial`, `tasks run`,
+Prism, wave-policy variations and a limited semaphore control. See the
+[flow matrix and mandatory Mapper/cache contract](docs/BENCHMARK_FLOW_MATRIX.md).
+The limited control is not a public legacy command; `tasks run` currently has
+a PR/merge delivery boundary and cannot be ranked against local edits alone.
+
+---
+
 ### Doctor — verify + repair
 
 ```bash

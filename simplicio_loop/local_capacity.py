@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
+import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -108,6 +111,57 @@ def _cgroup_cpu_capacity() -> int | None:
     return None
 
 
+def _macos_memory_available() -> int | None:
+    """Read a conservative macOS memory estimate without requiring psutil."""
+
+    if sys.platform != "darwin":
+        return None
+    sysctl = shutil.which("sysctl") or "/usr/sbin/sysctl"
+    vm_stat = shutil.which("vm_stat") or "/usr/bin/vm_stat"
+    try:
+        total_result = subprocess.run(
+            [sysctl, "-n", "hw.memsize"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        stat_result = subprocess.run(
+            [vm_stat],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if total_result.returncode != 0 or stat_result.returncode != 0:
+        return None
+    try:
+        total = int((total_result.stdout or "").strip())
+        page_match = re.search(r"page size of (\d+) bytes", stat_result.stdout or "")
+        page_size = int(page_match.group(1)) if page_match else 0
+    except (TypeError, ValueError):
+        return None
+    if total <= 0 or page_size <= 0:
+        return None
+
+    reclaimable_pages = 0
+    for line in (stat_result.stdout or "").splitlines():
+        match = re.match(r"^Pages (free|inactive|speculative|purgeable):\s+([\d.]+)", line)
+        if not match:
+            continue
+        try:
+            reclaimable_pages += int(float(match.group(2).rstrip(".")))
+        except ValueError:
+            continue
+    if reclaimable_pages <= 0:
+        return None
+    return min(total, reclaimable_pages * page_size)
+
+
 def _memory_available() -> int | None:
     host_available: int | None = None
     try:
@@ -116,6 +170,8 @@ def _memory_available() -> int | None:
         host_available = int(psutil.virtual_memory().available)
     except (ImportError, OSError, AttributeError, TypeError, ValueError):
         pass
+    if host_available is None:
+        host_available = _macos_memory_available()
     cgroup_available = _cgroup_memory_available()
     if host_available is None:
         return cgroup_available

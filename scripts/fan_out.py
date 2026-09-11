@@ -11,7 +11,7 @@ Preflight:
     4. Refill each slot immediately after completion
 
 Guardrails:
-    - max_workers: cap concurrent workers (default: 4, from env: FAN_OUT_MAX_WORKERS)
+    - max_workers: optional ceiling; default/0 uses detected machine capacity
     - Worktree provisioning is delegated to the isolated backend (#153)
     - One worker failure does not bring down others
     - Fallback to serial when cap==1 or no extra capacity
@@ -729,7 +729,7 @@ def main() -> int:
             i += 1
 
     tasks_path = opts.get("tasks")
-    max_workers = int(opts.get("max-workers", opts.get("max_workers", "4")))
+    max_workers = int(opts.get("max-workers", opts.get("max_workers", "0")))
     dry_run = opts.get("dry-run", "false").lower() == "true"
 
     if opts.get("selftest"):
@@ -755,6 +755,8 @@ def main() -> int:
 
     # Detect capacity
     capacity = detect_capacity()
+    if max_workers <= 0:
+        max_workers = capacity["workers_local"]
     effective_workers = min(max_workers, capacity["workers_local"], len(tasks))
 
     if effective_workers <= 0:
