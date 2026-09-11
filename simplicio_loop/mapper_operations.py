@@ -38,6 +38,11 @@ class OperationLease:
     expires_at: float | None = None
     cancelled: bool = False
 
+    @property
+    def fencing_token(self) -> str:
+        """Expose the Loop queue lease spelling without copying the token."""
+        return self.fence_token
+
 
 _CONFLICT_CODES = {
     "STALE_FENCE",

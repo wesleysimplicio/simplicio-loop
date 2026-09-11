@@ -1709,8 +1709,9 @@ def main(argv=None) -> int:
         return verify(args.repo, args.run_id)
     if command == "progress":
         run_id = args.run_id or args.run_flag
-        if not run_id:
-            parser.error("progress requires a run id (positional or --run)")
+        # An omitted run id means the latest run in --repo, matching the
+        # status command and keeping the public zero-config progress command
+        # useful immediately after `run`.
         return progress(args.repo, run_id, args.fmt, args.once, args.interval,
                         args.no_animation, args.ascii_only)
     if command == "resume":

@@ -212,8 +212,18 @@ def build_receipt(
     if fast.get("available") is False:
         raise LoopExecutionReceiptError("Fast is unavailable in the frozen stack lock")
     runtime_version = str(runtime.get("version") or "")
+    runtime_available = bool(runtime.get("available", True))
+    runtime_optional = False
     if not runtime_version or runtime_version.lower() == "installed":
-        raise LoopExecutionReceiptError("Runtime version is missing from the stack lock")
+        # The standalone Loop profile deliberately runs without the optional
+        # runtime-backed executor.  Preserve that fact in the receipt instead
+        # of fabricating a runtime version or rejecting an otherwise verified
+        # mapper-backed run.  Runtime-backed profiles remain fail-closed.
+        if str(stack_lock.get("route") or "") == "standalone" and not runtime_available:
+            runtime_version = "unavailable"
+            runtime_optional = True
+        else:
+            raise LoopExecutionReceiptError("Runtime version is missing from the stack lock")
 
     relative_run_dir = run_dir.relative_to(repo).as_posix()
     return {
@@ -252,6 +262,9 @@ def build_receipt(
             version=runtime_version,
             origin=str(runtime.get("executable") or "installed"),
             build_sha=str(runtime.get("build_sha") or ""),
+            available=runtime_available,
+            required=not runtime_optional,
+            optional=runtime_optional,
         ),
         "result": {
             "run_id": str(manifest.get("run_id") or run_dir.name),

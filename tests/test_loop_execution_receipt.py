@@ -162,6 +162,32 @@ def test_publish_rejects_fallback_component(tmp_path, monkeypatch):
         )
 
 
+def test_publish_allows_missing_optional_runtime_in_standalone_profile(tmp_path, monkeypatch):
+    repo, run = _fixture(tmp_path)
+    stack_lock = json.loads((run / "stack-lock.json").read_text(encoding="utf-8"))
+    stack_lock["route"] = "standalone"
+    runtime = next(item for item in stack_lock["components"] if item["name"] == "simplicio-runtime")
+    runtime.update({"version": "", "available": False, "executable": ""})
+    _write_json(run / "stack-lock.json", stack_lock)
+    monkeypatch.setattr(receipt_mod, "_git_commit", lambda _repo: "a" * 40)
+
+    result = receipt_mod.publish_loop_execution_receipt(
+        repo=repo, run_dir=run, manifest={"run_id": "run-1"}
+    )
+
+    assert result["status"] == "VERIFIED"
+    envelope = json.loads((repo / ".simplicio" / "loop-execution.json").read_text(encoding="utf-8"))
+    assert envelope["runtime"] == {
+        "version": "unavailable",
+        "origin": "installed",
+        "fallback": False,
+        "build_sha": "",
+        "available": False,
+        "required": False,
+        "optional": True,
+    }
+
+
 def test_publish_rejects_existing_bundle_without_overwrite(tmp_path, monkeypatch):
     repo, run = _fixture(tmp_path)
     (run / "runtime-loop-execution").mkdir()

@@ -114,6 +114,7 @@ def test_adapter_translates_operation_lease_and_preserves_opaque_fence():
     assert lease == OperationLease(
         "task-1", "attempt-1", "fence-1", "lease-1", "worker-1", {"kind": "test"}
     )
+    assert lease.fencing_token == "fence-1"
     renewed = adapter.heartbeat(lease, lease_seconds=10)
     assert renewed.expires_at == 123.5
     assert fake.calls[0] == (

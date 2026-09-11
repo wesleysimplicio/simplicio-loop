@@ -315,10 +315,12 @@ def test_progress_streams_when_run_dir_present(monkeypatch):
     assert captured["ascii_only"] is True
 
 
-def test_main_progress_requires_a_run_id():
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["progress", "--repo", "/r"])
-    assert exc.value.code == 2
+def test_main_progress_defaults_to_latest_run(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(cli, "progress", lambda repo, run_id, fmt, once, interval, no_animation, ascii_only:
+                        captured.update(repo=repo, run_id=run_id, once=once) or 0)
+    assert cli.main(["progress", "--repo", "/r", "--once"]) == 0
+    assert captured == {"repo": "/r", "run_id": "", "once": True}
 
 
 def test_main_progress_prefers_explicit_run_flag_over_positional(monkeypatch):

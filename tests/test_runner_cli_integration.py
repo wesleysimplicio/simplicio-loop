@@ -373,12 +373,17 @@ def test_run_mapper_requests_snapshot_and_execution_context(tmp_path, monkeypatc
     runner_mod._run_mapper(repo, run_root, goal="goal", target_hint="src/app.py")
 
     assert ["simplicio-mapper", "snapshot", "build", "--json", "."] in calls
-    for argv in calls:
-        if argv[:2] in (["simplicio-mapper", "scan"], ["simplicio-mapper", "inspect"]):
-            assert argv[argv.index("--timeout") + 1] == "2400"
-            assert "--await" not in argv
-            if argv[:2] == ["simplicio-mapper", "scan"]:
-                assert "--sync" not in argv
+    initial_scan = next(argv for argv in calls if argv[:2] == ["simplicio-mapper", "scan"])
+    initial_inspect = next(argv for argv in calls if argv[:2] == ["simplicio-mapper", "inspect"])
+    assert initial_scan[initial_scan.index("--timeout") + 1] == "2400"
+    assert initial_inspect[initial_inspect.index("--timeout") + 1] == "2400"
+    assert "--await" not in initial_scan
+    assert "--await" not in initial_inspect
+    assert "--sync" not in initial_scan
+    assert any(
+        argv[:2] == ["simplicio-mapper", "inspect"] and "--await" in argv
+        for argv in calls
+    )
     handoff_argv = next(argv for argv in calls if argv[:2] == ["simplicio-mapper", "handoff"])
     assert "--execution-context" in handoff_argv
     assert "--await" not in handoff_argv
@@ -387,6 +392,39 @@ def test_run_mapper_requests_snapshot_and_execution_context(tmp_path, monkeypatc
 
 
     assert handoff_argv[handoff_argv.index("--token-budget") + 1] == "24000"
+
+
+def test_run_mapper_reconciles_stale_inspect_after_handoff(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    inspect_calls = 0
+
+    monkeypatch.setattr(runner_mod, "_preflight_mapper", lambda *args: {
+        "task_aware_supported": False,
+        "help_stdout": "",
+    })
+    monkeypatch.setattr(runner_mod, "_validate_mapper_receipt", lambda *args: None)
+
+    def fake_run(argv, cwd):
+        nonlocal inspect_calls
+        if argv[:2] == ["simplicio-mapper", "inspect"]:
+            inspect_calls += 1
+            fresh = inspect_calls == 3
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"status": {"artifacts_present": True, "fresh": fresh}}),
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout=json.dumps({}), stderr="")
+
+    monkeypatch.setattr(runner_mod, "_run_cmd", fake_run)
+    result = runner_mod._run_mapper(repo, run_root)
+
+    assert inspect_calls == 3
+    assert result["inspect"]["stdout"]["status"]["fresh"] is True
+    assert "inspect_reconcile_wall_seconds" in result["execution_route"]["phase_timings_seconds"]
 
 
 def test_run_mapper_sync_rollback_is_explicit_and_receipted(tmp_path, monkeypatch):
@@ -669,6 +707,63 @@ def test_extract_repo_file_hints_accepts_rust_targets(tmp_path):
     assert runner_mod._extract_repo_file_hints(
         "Arquivos alvo: rust/supervisor.rs", repo
     ) == ["rust/supervisor.rs"]
+
+
+def test_extract_repo_file_hints_accepts_html_and_css_targets(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    assert runner_mod._extract_repo_file_hints(
+        "Arquivos alvo: site/index.html e site/styles.css; contrato: requirements/task.md",
+        repo,
+    ) == ["site/index.html", "site/styles.css"]
+
+
+def test_build_plan_uses_mapper_summary_hash_and_task_scoped_creation_targets(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tasks = [
+        {
+            "identity": {"system": "PAGE-101", "feature": "landing", "type": "creation"},
+            "original_text": "Arquivo-alvo: site/index.html",
+            "scenarios": [{"id": "S1", "title": "landing", "rule_refs": ["RN1"],
+                           "verification_intent": "file exists"}],
+            "rules": [{"id": "RN1", "text": "must exist"}],
+        },
+        {
+            "identity": {"system": "PAGE-102", "feature": "navigation", "type": "editing"},
+            "original_text": "Arquivo-alvo: site/index.html",
+            "scenarios": [{"id": "S2", "title": "navigation", "rule_refs": ["RN2"],
+                           "verification_intent": "navigation exists"}],
+            "rules": [{"id": "RN2", "text": "must preserve landing"}],
+        },
+    ]
+    state = runner_mod._repo_fingerprint(repo)
+    mapper_payload = {
+        "handoff": {
+            "stdout": {
+                "context_pack": {
+                    "summary": {"pack_hash": "pack-modern"},
+                    "files": [{"path": "bench/verify.py"}],
+                }
+            }
+        },
+        "repo_state_before": state,
+        "repo_state_after": state,
+        "generated_at": "2026-07-10T00:00:00Z",
+    }
+
+    plan = runner_mod._build_plan_with_hints(
+        tasks, mapper_payload, repo, "Arquivo-alvo: site/index.html; site/styles.css",
+        contract_hash="contract-1",
+    )
+
+    assert plan["mapper_pack_hash"] == "pack-modern"
+    assert plan["context_pack_hash"] == "pack-modern"
+    assert plan["steps"][0]["candidate_targets"][0] == "site/index.html"
+    assert plan["steps"][0]["to_create"] == ["site/index.html"]
+    assert plan["steps"][1]["candidate_targets"][0] == "site/index.html"
+    assert plan["steps"][1]["to_create"] == []
 
 
 def test_build_plan_uses_filtered_candidate_targets(tmp_path):

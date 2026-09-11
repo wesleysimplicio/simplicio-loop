@@ -59,3 +59,38 @@ def test_plan_rejects_escape_and_requires_to_create_for_new_target(tmp_path):
     assert result["valid"] is False
     assert "task[1] target_outside_repo:../escape.py" in result["errors"]
     assert "task[1] target_missing_without_to_create:src/new.py" in result["errors"]
+
+
+def test_plan_allows_later_edit_of_prior_planned_creation(tmp_path):
+    tasks = [
+        {"scenarios": [{"id": "S1"}], "rules": [{"id": "RN01"}]},
+        {"scenarios": [{"id": "S2"}], "rules": [{"id": "RN02"}]},
+    ]
+    plan = _plan(tmp_path)
+    plan["steps"] = [
+        {
+            "candidate_targets": ["src/new.py"],
+            "to_create": ["src/new.py"],
+            "rule_ids": ["RN01"],
+            "steps": [{"scenario_id": "S1", "plan": {
+                "read_paths": ["src/new.py"],
+                "change_paths": ["src/new.py"],
+                "test_commands": ["pytest"],
+            }}],
+        },
+        {
+            "candidate_targets": ["src/new.py"],
+            "to_create": [],
+            "rule_ids": ["RN02"],
+            "steps": [{"scenario_id": "S2", "plan": {
+                "read_paths": ["src/new.py"],
+                "change_paths": ["src/new.py"],
+                "test_commands": ["pytest"],
+            }}],
+        },
+    ]
+
+    result = validate_plan(plan, tasks, tmp_path, contract_hash="contract-1")
+
+    assert result["valid"] is True
+    assert result["errors"] == []

@@ -1,4 +1,5 @@
 .simplicio/*
+.venv/
 !.simplicio/orchestrator/
 .simplicio/orchestrator/*
 !.simplicio/orchestrator/savings/
