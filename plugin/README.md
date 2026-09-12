@@ -57,6 +57,7 @@ Each step buys a concrete gain in **quality**, **token economy**, or **delivery 
 |---|---|
 | `Stop` | `loop_stop.py` (re-feed / evidence-gated exit) |
 | `PreToolUse` (Bash) | `action_gate.py` (fail-closed safety gate) · `orient_rewrite.py` (opt-in output clamp, shells out to `orient_clamp.py`) |
+| `UserPromptSubmit` | `user_prompt_submit.py` (canonical Claude adapter decision) |
 
 **Project-scoped by design.** The two `PreToolUse` (Bash) hooks act **only inside an active
 simplicio-loop project** — a directory tree containing an `.simplicio/orchestrator/` marker, or any session

@@ -859,7 +859,7 @@ machine pressure remain visible stop conditions and are never silently bypassed.
 |---|---|---|
 | Install and utilities | `install`, `dashboard`, `learn` | Install the bundled skills/hooks; open or stop the token-monitor dashboard; derive and persist a retrospective from completed runs. |
 | Intake and planning | `task`, `prototype`, `plan`, `orient` | Validate/preview task contracts; route prototype planning; compile Markdown into a frozen contract; build bounded Mapper/Fast context and an orientation receipt. |
-| Execution | `run`, `tick`, `batch`, `single-task-fast` | Arm and execute a task with evidence; execute one planned task through Dev CLI; dispatch ready tasks through bounded isolated workers; select the local-first route for one task. |
+| Execution | `run`, `tick`, `batch`, `wave`, `prism`, `single-task-fast` | Arm and execute a task with evidence; execute one planned task through Dev CLI; dispatch ready tasks through bounded isolated workers and reconciled Prism waves; select the local-first route for one task. |
 | Run lifecycle | `status`, `progress`, `resume`, `cancel`, `verify`, `oracle`, `checkpoint` | Inspect a run; render progress as text/JSON/Markdown/ANSI; resume or cancel non-terminal work; run independent watcher/delivery gates; evaluate completion/parity; manage Fast V3 checkpoints. |
 | Repository and operators | `preflight`, `map`, `inspect`, `doctor`, `stack`, `extensions`, `retrieve` | Check Mapper/Dev CLI/Runtime/Fast readiness; inspect map-service receipts; inspect MapperStore capabilities; diagnose stack/source/resource/storage; lock or verify installed components; verify extension handshakes; retrieve tee-cache results. |
 | Queues and coordination | `queue`, `drain`, `agent-slots`, `generation-broker`, `ledger`, `hub-drain-plan`, `hub-drain-admit` | Operate the durable queue; evaluate or persist queue-drain receipts; inspect/reclaim Loop capacity; reconcile generation bindings; replay/validate the operational ledger; plan or admit GitHub drain work. |
@@ -899,11 +899,11 @@ Do not interpret ten logical tasks as ten unrestricted processes: physical CPU/R
 
 ### Where Prism fits
 
-`simplicio-prism` is a routing skill/layer, not a top-level `simplicio-loop prism` subcommand. It classifies the work and composes Mapper, Fast, Loop, Dev CLI, and Runtime. The concrete drain-wave operator is `scripts/arm_drain_prism.py`; Runtime's `simplicio loop decide` remains the authority for Loop activation.
+The public `simplicio-loop prism` and `simplicio-loop wave` commands dispatch through the same governed batch implementation, with typed receipts and a reconcile-before-next barrier. The `simplicio-prism` skill/layer classifies the work and composes Mapper, Fast, Loop, Dev CLI, and Runtime. The concrete drain-wave operator is `scripts/arm_drain_prism.py`; Runtime's `simplicio loop decide` remains the authority for Loop activation.
 
 A wave ends with lease/result reconciliation before the next group is admitted.
 Arming is preparation, not execution. In standalone operation Runtime/MCP is
-optional; Mapper remains mandatory. See the [Prism/wave interface details](docs/CLI_COMMANDS.md#prism-and-wave-are-not-top-level-subcommands).
+optional; Mapper remains mandatory. See the [Prism/wave interface details](docs/CLI_COMMANDS.md#prism-and-wave).
 
 **Measured benchmark status (2026-09-11):** ten simulated tasks pass the independent
 verifier after real OpenRouter proposals and native edits. This is a diagnostic
