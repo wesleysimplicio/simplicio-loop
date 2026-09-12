@@ -321,17 +321,50 @@ def evaluate_trial(trial: Mapping[str, Any], *, expected_tasks: int) -> dict[str
         reasons.append("incomplete_turns")
     if trial.get("quality_passed") is not True:
         reasons.append("quality_failed")
-    if trial.get("baseline_completed_tasks") != trial.get("treatment_completed_tasks"):
+    baseline_tasks = trial.get("baseline_completed_tasks")
+    treatment_tasks = trial.get("treatment_completed_tasks")
+    if (
+        not isinstance(baseline_tasks, int)
+        or isinstance(baseline_tasks, bool)
+        or not isinstance(treatment_tasks, int)
+        or isinstance(treatment_tasks, bool)
+        or baseline_tasks != treatment_tasks
+    ):
         reasons.append("unequal_completed_work")
     if trial.get("priced") is not True or not trial.get("generation_id"):
         reasons.append("unpriced_generation")
-    if trial.get("provider_expected") != trial.get("provider_observed"):
+    provider_expected = trial.get("provider_expected")
+    provider_observed = trial.get("provider_observed")
+    if (
+        not isinstance(provider_expected, str)
+        or not provider_expected
+        or not isinstance(provider_observed, str)
+        or not provider_observed
+        or provider_expected != provider_observed
+    ):
         reasons.append("provider_drift")
-    if trial.get("route_expected") != trial.get("route_observed"):
+    route_expected = trial.get("route_expected")
+    route_observed = trial.get("route_observed")
+    if (
+        not isinstance(route_expected, str)
+        or not route_expected
+        or not isinstance(route_observed, str)
+        or not route_observed
+        or route_expected != route_observed
+    ):
         reasons.append("unknown_or_mismatched_route")
     timeout_output = trial.get("timeout_output_bytes")
-    if isinstance(timeout_output, int) and timeout_output > int(trial.get("timeout_output_limit", 0) or 0):
-        reasons.append("timeout_output_limit_exceeded")
+    timeout_limit = trial.get("timeout_output_limit")
+    if timeout_output is not None:
+        if (
+            not isinstance(timeout_output, int)
+            or isinstance(timeout_output, bool)
+            or not isinstance(timeout_limit, int)
+            or isinstance(timeout_limit, bool)
+            or timeout_limit < 0
+            or timeout_output > timeout_limit
+        ):
+            reasons.append("timeout_output_limit_exceeded")
     retries = trial.get("retries")
     if not isinstance(retries, list):
         retries = []

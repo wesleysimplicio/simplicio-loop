@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import copy
 import hashlib
+
+import pytest
 
 from scripts.benchmark_preflight import CHECK_NAMES, evaluate_preflight, evaluate_trial
 
@@ -106,3 +109,80 @@ def test_trial_gate_rejects_known_benchmark_failure_modes() -> None:
         "timeout_output_limit_exceeded",
     ]
     assert result["retries"]
+
+
+@pytest.mark.parametrize(
+    ("check_name", "mutate"),
+    [
+        ("task_count", lambda d: d["task_count"].update(actual=11)),
+        ("source_files", lambda d: d["source_files"].update(paths=["../outside.py"])),
+        ("arm_config", lambda d: d["arm_config"].update(alternation=False)),
+        ("capture_proxy", lambda d: d["capture_proxy"].update(artifact_digest="short")),
+        ("executable", lambda d: d["executable"].update(sha256="short")),
+        ("authenticated_mcp_call", lambda d: d["authenticated_mcp_call"].update(authenticated=False)),
+        ("es_module_import", lambda d: d["es_module_import"].update(node_check_only=True)),
+        ("treatment_routing", lambda d: d["treatment_routing"].update(observed="off")),
+        ("off_routing", lambda d: d["off_routing"].update(receipt="")),
+        ("pinned_model_response", lambda d: d["pinned_model_response"].update(model="provider/drifted")),
+        ("captured_priced_generation", lambda d: d["captured_priced_generation"].update(priced=False)),
+        ("actual_upstream", lambda d: d["actual_upstream"].update(observed="provider/drifted")),
+        ("stdin_safe_loop", lambda d: d["stdin_safe_loop"].update(completed_tasks=11)),
+        ("no_stale_tool_names", lambda d: d["no_stale_tool_names"].update(stale=["legacy_tool"])),
+        ("tools_list_capability", lambda d: d["tools_list_capability"].update(available=["tools/list"])),
+    ],
+)
+def test_each_preflight_check_fails_closed(check_name: str, mutate) -> None:
+    descriptor = copy.deepcopy(_descriptor())
+    mutate(descriptor)
+    report = evaluate_preflight(descriptor)
+    assert report["ready"] is False
+    assert check_name in report["failed_or_unknown"]
+    check = next(item for item in report["checks"] if item["name"] == check_name)
+    assert check["status"] == "fail"
+
+
+def _valid_trial() -> dict[str, object]:
+    return {
+        "completed_tasks": 12,
+        "quality_passed": True,
+        "baseline_completed_tasks": 12,
+        "treatment_completed_tasks": 12,
+        "priced": True,
+        "generation_id": "generation-1",
+        "provider_expected": "provider/pinned",
+        "provider_observed": "provider/pinned",
+        "route_expected": "treatment",
+        "route_observed": "treatment",
+        "timeout_output_bytes": 10,
+        "timeout_output_limit": 100,
+    }
+
+
+@pytest.mark.parametrize(
+    ("reason", "field", "value"),
+    [
+        ("incomplete_turns", "completed_tasks", 11),
+        ("quality_failed", "quality_passed", False),
+        ("unequal_completed_work", "treatment_completed_tasks", 11),
+        ("unpriced_generation", "priced", False),
+        ("provider_drift", "provider_observed", "provider/other"),
+        ("unknown_or_mismatched_route", "route_observed", "off"),
+        ("timeout_output_limit_exceeded", "timeout_output_limit", 5),
+        ("provider_drift", "provider_observed", None),
+        ("unknown_or_mismatched_route", "route_observed", None),
+        ("unequal_completed_work", "baseline_completed_tasks", None),
+        ("timeout_output_limit_exceeded", "timeout_output_limit", None),
+    ],
+)
+def test_each_trial_invalidation_reason_is_deterministic(reason: str, field: str, value) -> None:
+    trial = _valid_trial()
+    trial[field] = value
+    result = evaluate_trial(trial, expected_tasks=12)
+    assert result["valid"] is False
+    assert reason in result["reasons"]
+
+
+def test_trial_with_complete_observed_evidence_is_valid() -> None:
+    result = evaluate_trial(_valid_trial(), expected_tasks=12)
+    assert result["status"] == "VALID"
+    assert result["reasons"] == []
