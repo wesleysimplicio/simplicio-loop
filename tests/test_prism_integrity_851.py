@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import re
 from pathlib import Path
 
 from scripts.prism_integrity import evaluate
@@ -71,8 +72,10 @@ def test_dependency_version_and_fast_branch_drift_are_blocked(tmp_path):
 def test_version_fallback_drift_is_blocked(tmp_path):
     repo = fixture_repo(tmp_path)
     package = repo / "simplicio_loop" / "__init__.py"
+    pyproject = (repo / "pyproject.toml").read_text(encoding="utf-8")
+    version = re.search(r'(?m)^version\s*=\s*"([^"]+)"', pyproject).group(1)
     package.write_text(
-        package.read_text(encoding="utf-8").replace("3.43.5", "9.9.9"),
+        package.read_text(encoding="utf-8").replace(version, "9.9.9"),
         encoding="utf-8",
     )
     report = evaluate(repo)

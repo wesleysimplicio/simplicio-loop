@@ -22,7 +22,7 @@ def normalize_mapper_index_receipt(
     if not isinstance(result, Mapping) or not isinstance(result.get("paths"), Mapping):
         if (
             receipt.get("schema") == "simplicio.mapper-index/v1"
-            and receipt.get("status") in {"updated", "unchanged"}
+            and receipt.get("status") in {"updated", "unchanged", "skipped"}
             and isinstance(receipt.get("paths"), Mapping)
         ):
             result = {
@@ -36,6 +36,7 @@ def normalize_mapper_index_receipt(
     elif receipt.get("schema") != "simplicio.mapper-index/v1" or receipt.get("status") not in {
         "updated",
         "unchanged",
+        "skipped",
     }:
         raise RuntimeError("Mapper does not support a verifiable standalone receipt")
 

@@ -14,7 +14,7 @@ import tempfile
 import time
 import webbrowser
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 try:
     from scripts import release_manifest as _release_manifest
 except Exception:  # pragma: no cover - import shim for bundled scripts
@@ -86,6 +86,7 @@ from . import inspection_cli as _inspection_cli
 from .progress import stream as stream_progress
 from .oracle import evaluate_matrix, persist_completion_receipt
 from .delivery import DELIVERY_ORDER
+from .evidence import redact_sensitive_text
 from .economy_profile import (
     llm_max_speed_orientation_contract,
     prism_batches,
@@ -700,10 +701,127 @@ def resume(repo: str, run_id: str) -> int:
     return 0
 
 
-def tick(repo: str, run_id: str, task_index: int) -> int:
-    payload = execute_operator(repo, run_id, task_index=task_index)
-    print(__import__("json").dumps(payload, ensure_ascii=False, indent=2))
+def _dispatch_failure_payload(schema: str, repo: str, run_id: str, error: Exception,
+                              task_indices: Optional[Sequence[int]] = None) -> dict:
+    payload = {
+        "schema": schema,
+        "status": "blocked",
+        "reason_code": "operator_dispatch_failed",
+        "repo": str(repo),
+        "run_id": str(run_id),
+        "task_indices": list(task_indices or []),
+        "error_type": type(error).__name__,
+        "error": redact_sensitive_text(str(error)),
+    }
+    payload["receipt_hash"] = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return payload
+
+
+def _dispatch_exit_code(payload: Mapping[str, Any]) -> int:
+    """Return non-zero whenever a dispatch receipt is not a verified success."""
+    if not payload:
+        return 0  # preserve the thin CLI seam used by compatibility callers
+    status = str(payload.get("status") or "").lower()
+    if status in {"blocked", "held", "failed", "cancelled", "error"}:
+        return 2
+    if str(payload.get("phase") or "").lower() in {"blocked", "cancelled"}:
+        return 2
+    if str(payload.get("execution_state") or "").lower() in {"blocked", "uncertain"}:
+        return 2
+    if str(payload.get("action") or "") in {
+        "operator_failed", "operator_batch_blocked", "operator_batch_preflight_blocked",
+    }:
+        return 2
+    if payload.get("failed") or payload.get("blocked") or payload.get("dead_letter") or payload.get("blockers"):
+        return 2
+    admission = payload.get("capacity") or payload.get("admission")
+    if isinstance(admission, Mapping) and admission.get("admitted") is False:
+        return 2
+    workers = payload.get("workers")
+    if isinstance(workers, list) and any(
+        not isinstance(worker, Mapping) or worker.get("status") not in {"succeeded", "completed"}
+        for worker in workers
+    ):
+        return 2
+    if payload.get("requested_tasks") and isinstance(workers, list) and not workers:
+        return 2
     return 0
+
+
+def _reconcile_prism_wave(task_indices: Sequence[int], result: Mapping[str, Any]) -> dict:
+    requested = [int(index) for index in task_indices]
+    requested_set = set(requested)
+    workers = result.get("workers") if isinstance(result, Mapping) else None
+    workers = workers if isinstance(workers, list) else []
+    completed = {
+        int(index) for index in (result.get("completed_tasks") or [])
+        if isinstance(index, (int, str)) and str(index).lstrip("-").isdigit()
+    } if isinstance(result, Mapping) else set()
+    worker_by_task = {}
+    failed = []
+    for worker in workers:
+        if not isinstance(worker, Mapping):
+            failed.append(None)
+            continue
+        try:
+            task_index = int(worker.get("task_index"))
+        except (TypeError, ValueError):
+            failed.append(None)
+            continue
+        worker_by_task[task_index] = worker
+        if worker.get("status") not in {"succeeded", "completed"}:
+            failed.append(task_index)
+    missing = sorted(requested_set - set(worker_by_task) - completed)
+    if failed:
+        reason_code = "wave_worker_failed"
+    elif missing:
+        reason_code = "wave_receipt_missing"
+    elif not workers and not completed:
+        reason_code = "wave_receipt_invalid"
+    elif isinstance(result, Mapping) and str(result.get("status") or "").lower() not in {"completed", "succeeded", "success"}:
+        reason_code = "wave_not_terminal"
+    else:
+        reason_code = "wave_receipts_reconciled"
+    ok = reason_code == "wave_receipts_reconciled"
+    return {
+        "schema": "simplicio.prism-wave-reconciliation/v1",
+        "status": "reconciled" if ok else "held",
+        "ok": ok,
+        "requested_tasks": requested,
+        "missing": missing,
+        "failed": sorted(index for index in failed if index is not None),
+        "reason_code": reason_code,
+    }
+
+
+def _persist_prism_wave_receipt(repo: str, run_id: str, payload: dict) -> str:
+    try:
+        status = read_status(repo, run_id)
+        run_dir = Path(status["run_dir"])
+        if not run_dir.is_dir():
+            return ""
+        path = run_dir / "prism-wave-dispatch.json"
+        payload["receipt_path"] = str(path)
+        unsigned = dict(payload)
+        unsigned.pop("receipt_hash", None)
+        payload["receipt_hash"] = hashlib.sha256(
+            json.dumps(unsigned, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        return str(path)
+    except (KeyError, OSError, TypeError, ValueError):
+        return ""
+
+
+def tick(repo: str, run_id: str, task_index: int) -> int:
+    try:
+        payload = execute_operator(repo, run_id, task_index=task_index)
+    except Exception as exc:
+        payload = _dispatch_failure_payload("simplicio.tick-receipt/v1", repo, run_id, exc, [task_index])
+    print(__import__("json").dumps(payload, ensure_ascii=False, indent=2))
+    return _dispatch_exit_code(payload)
 
 
 def batch(repo: str, run_id: str, task_indices: str, max_workers: int, retry_budget: int,
@@ -727,39 +845,49 @@ def batch(repo: str, run_id: str, task_indices: str, max_workers: int, retry_bud
 
     eligibility = prism_is_eligible(len(indices or []), explicit_serial=serial)
     if not eligibility["eligible"]:
-        payload = execute_operator_batch(
-            repo,
-            run_id,
-            indices,
-            max_workers=max_workers or None,
-            retry_budget=retry_budget,
-            auto_fan_out=not serial,
-        )
+        try:
+            payload = execute_operator_batch(
+                repo,
+                run_id,
+                indices,
+                max_workers=max_workers or None,
+                retry_budget=retry_budget,
+                auto_fan_out=not serial,
+            )
+        except Exception as exc:
+            payload = _dispatch_failure_payload("simplicio.operator-batch-receipt/v1", repo, run_id, exc, indices)
         payload["prism"] = {**eligibility, "batch_size": None, "waves": 1}
         print(json.dumps(payload, ensure_ascii=False, indent=2))
-        return 0
+        return _dispatch_exit_code(payload)
 
     width = resolve_prism_batch_size(batch_size)
     waves = prism_batches(indices, width)
     worker_limit = min(max_workers or width, width)
     wave_results = []
+    all_reconciled = True
     for wave_number, wave in enumerate(waves, start=1):
-        result = execute_operator_batch(
-            repo,
-            run_id,
-            wave,
-            max_workers=worker_limit,
-            retry_budget=retry_budget,
-            auto_fan_out=True,
-        )
-        wave_results.append({"wave": wave_number, "task_indices": wave, "result": result})
+        try:
+            result = execute_operator_batch(
+                repo,
+                run_id,
+                wave,
+                max_workers=worker_limit,
+                retry_budget=retry_budget,
+                auto_fan_out=True,
+            )
+        except Exception as exc:
+            result = _dispatch_failure_payload("simplicio.operator-batch-receipt/v1", repo, run_id, exc, wave)
+        reconciliation = _reconcile_prism_wave(wave, result)
+        wave_results.append({"wave": wave_number, "task_indices": wave, "result": result,
+                             "reconciliation": reconciliation})
+        if not reconciliation["ok"]:
+            all_reconciled = False
+            break
 
     workers = [worker for wave in wave_results for worker in (wave["result"].get("workers") or [])]
     payload = {
         "schema": "simplicio.prism-wave-dispatch/v1",
-        "status": "completed" if all(
-            worker.get("status") == "succeeded" for worker in workers
-        ) else "held",
+        "status": "completed" if all_reconciled and len(wave_results) == len(waves) else "held",
         "prism": {
             **eligibility,
             "batch_size": width,
@@ -770,8 +898,9 @@ def batch(repo: str, run_id: str, task_indices: str, max_workers: int, retry_bud
         "waves": wave_results,
         "workers": workers,
     }
+    _persist_prism_wave_receipt(repo, run_id, payload)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
-    return 0
+    return _dispatch_exit_code(payload)
 
 
 def cancel(repo: str, run_id: str) -> int:
@@ -1397,29 +1526,36 @@ def main(argv=None) -> int:
     p_tick.add_argument("run_id", help="run id to tick")
     p_tick.add_argument("--task-index", type=int, default=1, help="1-based task index")
 
+    def _configure_batch_parser(parser):
+        parser.add_argument("--repo", default=".", help="repository root")
+        parser.add_argument("run_id", help="run id to dispatch")
+        parser.add_argument(
+            "--task-indices",
+            default="",
+            help="comma-separated 1-based task indices (default: every task in the contract)",
+        )
+        parser.add_argument(
+            "--max-workers",
+            type=int,
+            default=0,
+            help="worker demand (default/0: automatic; live CPU/RAM/disk admission governs concurrency; positive values set an explicit ceiling)",
+        )
+        parser.add_argument("--retry-budget", type=int, default=3, help="retries after the first attempt")
+        parser.add_argument(
+            "--batch-size", type=int, default=None,
+            help="Prism wave width (default/minimum: 10; no logical upper bound, e.g. 30)",
+        )
+        parser.add_argument(
+            "--serial", action="store_true",
+            help="disable the default isolated fan-out and force the shared-run serial lane",
+        )
+
     p_batch = sub.add_parser("batch", help="continuously dispatch ready tasks through simplicio-dev-cli")
-    p_batch.add_argument("--repo", default=".", help="repository root")
-    p_batch.add_argument("run_id", help="run id to dispatch")
-    p_batch.add_argument(
-        "--task-indices",
-        default="",
-        help="comma-separated 1-based task indices (default: every task in the contract)",
-    )
-    p_batch.add_argument(
-        "--max-workers",
-        type=int,
-        default=0,
-        help="worker demand (default/0: automatic; live CPU/RAM/disk admission governs concurrency; positive values set an explicit ceiling)",
-    )
-    p_batch.add_argument("--retry-budget", type=int, default=3, help="retries after the first attempt")
-    p_batch.add_argument(
-        "--batch-size", type=int, default=None,
-        help="Prism wave width (default/minimum: 10; no logical upper bound, e.g. 30)",
-    )
-    p_batch.add_argument(
-        "--serial", action="store_true",
-        help="disable the default isolated fan-out and force the shared-run serial lane",
-    )
+    _configure_batch_parser(p_batch)
+    p_wave = sub.add_parser("wave", help="dispatch a governed wave with reconciliation barriers")
+    _configure_batch_parser(p_wave)
+    p_prism = sub.add_parser("prism", help="dispatch work through the governed Prism route")
+    _configure_batch_parser(p_prism)
 
     p_cancel = sub.add_parser("cancel", help="cancel a non-terminal run")
     p_cancel.add_argument("--repo", default=".", help="repository root")
@@ -1718,7 +1854,7 @@ def main(argv=None) -> int:
         return resume(args.repo, args.run_id)
     if command == "tick":
         return tick(args.repo, args.run_id, args.task_index)
-    if command == "batch":
+    if command in {"batch", "wave", "prism"}:
         return batch(args.repo, args.run_id, args.task_indices, args.max_workers, args.retry_budget, args.serial, args.batch_size)
     if command == "cancel":
         return cancel(args.repo, args.run_id)
@@ -1778,7 +1914,7 @@ def main(argv=None) -> int:
             print(json.dumps({"status": "BLOCKED", "reason_code": "invalid_task_file", "error": str(exc)}, sort_keys=True))
             return 2
         print(json.dumps(result, sort_keys=True))
-        return 0 if result["status"] != "BLOCKED" else 2
+        return 0 if result["status"] == "COMPLETED" else 2
     if command == "ledger":
         return ledger_replay(
             args.path,

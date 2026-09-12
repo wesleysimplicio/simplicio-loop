@@ -13,7 +13,7 @@ No behavior of its own — pure data, imported by `sync_plugin.py` and `claims_a
 # The ONLY hook files the marketplace plugin ships: those wired in hooks.claude.json + their deps.
 # loop_stop (Stop) · action_gate/orient_rewrite (PreToolUse) · orient_clamp (orient_rewrite shells
 # out to it) · hooks.claude.json (the wiring) · pre-commit.py (auto-sync, #98).
-LEAN_HOOKS = ["loop_stop.py", "action_gate.py", "orient_rewrite.py",
+LEAN_HOOKS = ["loop_stop.py", "action_gate.py", "orient_rewrite.py", "user_prompt_submit.py",
               "orient_clamp.py", "hooks.claude.json", "pre-commit.py"]
 
 # Every scripts/<name>.py the simplicio-loop SKILL.md normative protocol actually shells out to,

@@ -49,6 +49,8 @@ Use the most specific form, such as `simplicio-loop queue top --help` or
 | `resume` | Resume a non-terminal run. |
 | `tick` | Execute one planned task through Dev CLI. |
 | `batch` | Dispatch ready tasks with bounded isolated workers. |
+| `wave` | Dispatch a governed wave and reconcile every worker before admitting another wave. |
+| `prism` | Dispatch through the governed Prism route; uses the same physical governor and receipts as `batch`. |
 | `cancel` | Cancel a non-terminal run. |
 | `checkpoint` | Inspect, cancel, or garbage-collect Fast V3 checkpoints. |
 | `maintenance-deferred` | Record a maintenance-deferred backlog transition. |
@@ -84,10 +86,12 @@ admission still controls safe CPU/RAM/disk concurrency; `--serial` is an explici
 conflict/dependency choice, not the default. Receipts and validation gates remain
 mandatory.
 
-## Prism and wave are not top-level subcommands
+## Prism and wave
 
-`simplicio-prism` is the routing skill in
-`.claude/skills/simplicio-prism/SKILL.md`, not `simplicio-loop prism`.
+`simplicio-loop wave` and `simplicio-loop prism` are public aliases of the governed
+batch surface. Both preserve physical CPU/RAM/disk admission and stop before the
+next wave when reconciliation is missing or failed. `simplicio-prism` remains the
+routing skill in `.claude/skills/simplicio-prism/SKILL.md`.
 `python3 scripts/arm_drain_prism.py --help` describes the drain arming script.
 It writes a scratchpad and environment recommendations; it does not start
 agents or deliver tasks. Its source adapter queries GitHub, so arming a local

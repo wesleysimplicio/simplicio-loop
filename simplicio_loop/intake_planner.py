@@ -46,6 +46,7 @@ distinct role in the manifesto with a disjoint ``independent_of_roles`` set).
 """
 from __future__ import annotations
 from simplicio_loop.mapper_receipt import normalize_mapper_index_receipt
+from simplicio_loop.fast_integration import FAST_INGEST_SCHEMA, FAST_PLAN_SCHEMA
 
 import hashlib
 import json
@@ -597,6 +598,68 @@ def _verified_hash_receipt(value: Any) -> bool:
     return bool(supplied) and supplied == content_hash(unsigned)
 
 
+def _fast_generation(value: Any) -> str:
+    if isinstance(value, Mapping):
+        metrics = value.get("metrics")
+        candidates = (value.get("generation"), value.get("generation_id"),
+                      metrics.get("generation") if isinstance(metrics, Mapping) else None)
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate:
+                return candidate
+        for child in value.values():
+            generation = _fast_generation(child)
+            if generation:
+                return generation
+    elif isinstance(value, list):
+        for child in value:
+            generation = _fast_generation(child)
+            if generation:
+                return generation
+    return ""
+
+
+def _loop_fast_receipt(raw: Mapping[str, Any], *, schema: str, stage: str,
+                       repo: str, generation: str) -> dict[str, Any]:
+    unsigned = {
+        "schema": schema,
+        "status": "MEASURED",
+        "repo": str(repo),
+        "generation": generation,
+        "operator": "simplicio-fast",
+        "provenance": {"stage": stage, "source_schema": raw.get("schema")},
+        "fast_receipt": dict(raw),
+    }
+    return {**unsigned, "receipt_hash": content_hash(unsigned)}
+
+
+def _normalize_fast_ingest_receipt(raw: Any, *, repo: str) -> dict[str, Any]:
+    if (isinstance(raw, Mapping) and raw.get("schema") == "simplicio.fast-ingest-receipt/v1"
+            and raw.get("repo") == str(repo) and _verified_hash_receipt(raw)):
+        return dict(raw)
+    if isinstance(raw, Mapping) and raw.get("schema") == FAST_INGEST_SCHEMA:
+        generation = _fast_generation(raw)
+        snapshot = raw.get("snapshot")
+        metrics = raw.get("metrics")
+        if not isinstance(snapshot, str) and isinstance(metrics, Mapping):
+            snapshot = metrics.get("snapshot")
+        if generation and isinstance(snapshot, str) and snapshot:
+            return _loop_fast_receipt(raw, schema="simplicio.fast-ingest-receipt/v1",
+                                      stage="ingest", repo=repo, generation=generation)
+    raise RuntimeError("Fast does not support a verifiable ingest receipt")
+
+
+def _normalize_fast_plan_receipt(raw: Any, *, repo: str, generation: str) -> dict[str, Any]:
+    if (isinstance(raw, Mapping) and raw.get("schema") == "simplicio.fast-plan-receipt/v1"
+            and isinstance(raw.get("nodes"), list) and _verified_hash_receipt(raw)):
+        return dict(raw)
+    if isinstance(raw, Mapping) and raw.get("schema") == FAST_PLAN_SCHEMA:
+        fast_generation = _fast_generation(raw)
+        if isinstance(raw.get("nodes"), list) and fast_generation:
+            return _loop_fast_receipt(raw, schema="simplicio.fast-plan-receipt/v1",
+                                      stage="plan", repo=repo, generation=fast_generation)
+    raise RuntimeError("Fast does not support a verifiable plan receipt")
+
+
 def _run_single_task_fast(task: Mapping[str, Any], operations: Mapping[str, Any], *, strict: bool = True, clock=time.perf_counter) -> Dict[str, Any]:
     """Execute one pinned local-first attempt through one Dev CLI mutation."""
     started = clock()
@@ -633,9 +696,9 @@ def _run_single_task_fast(task: Mapping[str, Any], operations: Mapping[str, Any]
     if int(context.get("bytes", 0)) > contract["budgets"]["max_context_bytes"] or int(context.get("tokens", 0)) > contract["budgets"]["max_context_tokens"]:
         escalation = _call(operations, "full_pipeline", contract, ["target_expansion"])
         return {"schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE, "status": "ESCALATED", "reason_code": "context_budget_exceeded", "triggers": ["target_expansion"], "escalation": escalation}
-    plan = _call(operations, "fast_plan", contract, context, mapper_generation)
-    timings["fast_context_plan_ms"] = (clock() - phase) * 1000
     fast_generation = context.get("generation")
+    plan = _call(operations, "fast_plan", contract, context, fast_generation)
+    timings["fast_context_plan_ms"] = (clock() - phase) * 1000
     if not fast_generation or plan.get("generation") != fast_generation:
         return {"schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE, "status": "BLOCKED", "reason_code": "fast_generation_mismatch"}
     pins = {"mapper": _call(operations, "pin_generation", "mapper", mapper_generation), "fast": _call(operations, "pin_generation", "fast", fast_generation)}
@@ -774,7 +837,14 @@ def build_local_single_task_operations(task: Mapping[str, Any], *, root: str = "
                                 env=allowed_env)
         if result.returncode != 0:
             raise RuntimeError((result.stderr or result.stdout or "operator failed").strip())
-        lines = [line for line in result.stdout.splitlines() if line.strip()]
+        output = result.stdout.strip()
+        try:
+            value = json.loads(output)
+        except json.JSONDecodeError:
+            value = None
+        if isinstance(value, Mapping):
+            return dict(value)
+        lines = [line for line in output.splitlines() if line.strip()]
         for line in reversed(lines):
             try:
                 value = json.loads(line)
@@ -801,22 +871,20 @@ def build_local_single_task_operations(task: Mapping[str, Any], *, root: str = "
 
     def fast_context(contract, foreground, engine):
         ingest = run_json([fast, "--fast-engine", engine, "ingest", str(repo), "--json"])
-        if not valid_receipt(ingest, "simplicio.fast-ingest-receipt/v1") or ingest.get("repo") != str(repo):
-            raise RuntimeError("Fast does not support a verifiable ingest receipt")
+        ingest_receipt = _normalize_fast_ingest_receipt(ingest, repo=str(repo))
         understanding = run_json([fast, "--fast-engine", engine, "understand", "--root", str(repo),
                                   "--max-bytes", str(contract["budgets"]["max_context_bytes"]), contract["goal"]])
-        generation = str(ingest.get("generation") or ingest.get("generation_id") or content_hash(ingest))
+        generation = _fast_generation(understanding) or str(ingest_receipt.get("generation"))
         raw = json.dumps(understanding, sort_keys=True).encode("utf-8")
         return {"generation": generation, "bytes": len(raw), "tokens": (len(raw) + 3) // 4,
                 "cache_decision": str(understanding.get("cache_decision") or "local"),
-                "receipt": understanding}
+                "receipt": understanding, "ingest_receipt": ingest_receipt}
 
     def fast_plan(contract, context, generation):
         receipt = run_json([fast, "--fast-engine", "python", "plan", "--root", str(repo),
                             "--max-bytes", str(contract["budgets"]["max_context_bytes"]), contract["goal"]])
-        if not valid_receipt(receipt, "simplicio.fast-plan-receipt/v1"):
-            raise RuntimeError("Fast does not support a verifiable plan receipt")
-        return {"generation": str(receipt.get("generation") or generation), "receipt": receipt,
+        plan_receipt = _normalize_fast_plan_receipt(receipt, repo=str(repo), generation=generation)
+        return {"generation": str(plan_receipt.get("generation") or generation), "receipt": plan_receipt,
                 "changeset": changeset}
 
     def dev_transaction(authority, plan, first_edit):
@@ -876,6 +944,7 @@ def build_local_single_task_operations(task: Mapping[str, Any], *, root: str = "
         "stop_recovery": lambda blocked: {"applied": False, "preserved": False,
                                             "reason": "verifiable_stop_recovery_operator_unavailable"},
         "full_pipeline": lambda contract, triggers: {"status": "BLOCKED", "reason_code": "full_pipeline_handoff_required", "triggers": triggers},
+        "local_operator_binding": True,
     }
 
 
@@ -889,7 +958,16 @@ def dispatch_single_task_fast(tasks: Sequence[Mapping[str, Any]], operations: Op
     if selection["route"] != SINGLE_TASK_FAST_ROUTE:
         return {"schema": SINGLE_TASK_FAST_SCHEMA, **selection, "status": "ESCALATED"}
     if operations is None:
-        operations = build_local_single_task_operations(tasks[0], root=str(tasks[0].get("repo") or "."))
+        if not isinstance(tasks[0].get("changeset"), Mapping):
+            return {"schema": SINGLE_TASK_FAST_SCHEMA, **selection, "status": "BLOCKED",
+                    "reason_code": "mapper_operation_failed",
+                    "error": "ValueError: local execution requires a deterministic changeset"}
+        try:
+            operations = build_local_single_task_operations(tasks[0], root=str(tasks[0].get("repo") or "."))
+        except Exception as exc:
+            return {"schema": SINGLE_TASK_FAST_SCHEMA, **selection, "status": "BLOCKED",
+                    "reason_code": "mapper_operation_failed",
+                    "error": f"{type(exc).__name__}: {exc}"}
         available = operations.get("available_tools") if isinstance(operations, Mapping) else None
         if isinstance(available, Mapping):
             missing = sorted(str(name) for name, present in available.items() if not present)
