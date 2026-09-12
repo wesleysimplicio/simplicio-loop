@@ -3,6 +3,13 @@ Total output lines: 1972
 
 # Changelog
 
+## [3.43.11] - 2026-09-12
+
+- Align the aggregate release with Mapper `0.26.31`, Dev CLI `0.18.13`, and
+  Fast `2.0.33`.
+- Publish the current `main` operator-flow updates, including governed task
+  routes and run-attributable savings reporting.
+
 ## [3.43.10] - 2026-09-10
 - Bound benchmark preflight inputs and outputs and make signature literal minimization explicit.
 - Add focused regression coverage for signature views and invalid-trial preflight behavior.
