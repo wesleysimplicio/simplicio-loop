@@ -875,7 +875,7 @@ Ten tasks are above the three-task direct-parallel threshold, so the Loop routes
 simplicio loop decide --task "complete these 10 tasks" --repo . --json
 
 # 2. Inspect the profile before applying environment changes
-# 3.43.10 recommends MCP-required flags; do not apply it blindly in CLI-only mode.
+# 3.43.11 recommends MCP-required flags; do not apply it blindly in CLI-only mode.
 simplicio-loop economy status --json
 
 # 3. Block until the required operators and strict mutation policy are ready
@@ -939,7 +939,7 @@ simplicio-loop queue status
 simplicio-loop verify <run_id>
 ```
 
-The complete command reference is [`docs/CLI_COMMANDS.md`](docs/CLI_COMMANDS.md). The command surface can vary by installed package version, so check `simplicio-loop --version` and `simplicio-loop --help`; the current repository source is `3.43.10`.
+The complete command reference is [`docs/CLI_COMMANDS.md`](docs/CLI_COMMANDS.md). The command surface can vary by installed package version, so check `simplicio-loop --version` and `simplicio-loop --help`; the current repository source is `3.43.11`.
 
 The restarted comparison includes `run`, `batch`, `batch --serial`, `tasks run`,
 Prism, wave-policy variations and a limited semaphore control. See the
