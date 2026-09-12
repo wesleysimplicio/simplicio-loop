@@ -308,9 +308,9 @@ _SIG_PATTERNS = [
     r"^\s*func\s+(?:\([^)]*\)\s*)?\w+\s*\(",
     # method-ish / arrow funcs assigned to a name
     r"^\s*(?:export\s+)?(?:const|let|var)\s+\w+\s*[:=].*=>\s*\{?\s*$",
-    r"^\s*(?:public|private|protected|internal|static|final|abstract|override|virtual|async|const|readonly)\s+[\w<>,\[\]\s\*&:]+\w+\s*\([^;{]*\)\s*[{:]?\s*$",
+    r"^\s*(?:public|private|protected|internal|static|final|abstract|override|virtual|async|const|readonly)\s+[\w<>,\[\]\s\*&:]+\w+\s*\([^;{]*\)\s*[{:]?.*$",
     # java/c#/c/cpp method or function signature ending in `) {` or `) ->`
-    r"^\s*[\w<>,\[\]\*&:\s~]+\b\w+\s*\([^;{}]*\)\s*(?:const\s*)?(?:->[\w<>,\[\]\*&:\s]+)?\s*\{\s*$",
+    r"^\s*[\w<>,\[\]\*&:\s~]+\b\w+\s*\([^;{}]*\)\s*(?:const\s*)?(?:->[\w<>,\[\]\*&:\s]+)?\s*\{.*$",
 ]
 _SIG_RE = re.compile("|".join(f"(?:{p})" for p in _SIG_PATTERNS))
 
@@ -381,6 +381,19 @@ def _assignment_index(line: str) -> int | None:
     return None
 
 
+_REGEX_STRING_LITERAL_RE = re.compile(r"(['\"`])(?:\\.|(?!\1).)*\1")
+_REGEX_DEFAULT_LITERAL_RE = re.compile(
+    r"(\b[\w$]+\s*=\s*)(?:[-+]?(?:\d+(?:\.\d*)?|\.\d+)|"
+    r"(['\"`])(?:\\.|(?!\2).)*\2)"
+)
+
+
+def _elide_regex_literals(line: str) -> str:
+    """Replace literals visible in retained regex lines with omission markers."""
+    line = _REGEX_STRING_LITERAL_RE.sub("...", line)
+    return _REGEX_DEFAULT_LITERAL_RE.sub(r"\1...", line)
+
+
 def _sanitize_regex_line(line: str) -> str:
     """Preserve declaration shape while removing initializer/body literals."""
     stripped = line.lstrip()
@@ -424,12 +437,17 @@ def _sanitize_regex_line(line: str) -> str:
         elif char == "]":
             bracket = max(0, bracket - 1)
         elif char == "{" and not (paren or bracket):
-            return line[:index].rstrip() + " { ... }"
-    return line
+            return _elide_regex_literals(line[:index].rstrip() + " { ... }")
+    return _elide_regex_literals(line)
 
 
 def signatures(source: str, lang: str | None) -> str:
-    """Dispatch to the python or regex extractor. Fail-open on parse errors."""
+    """Dispatch to Python AST or the regex fallback.
+
+    Python syntax errors intentionally use the same sanitized regex path as
+    non-Python sources, so parse failure cannot downgrade signature mode into
+    a raw-source read.
+    """
     if lang == "py":
         try:
             return signatures_python(source)
