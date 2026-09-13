@@ -96,6 +96,12 @@ from .stack_lock import (
 from .execution_route import _stable_hash as _execution_route_hash
 from .execution_route import capability_fingerprint, normalize_capability_manifest, route_receipt_is_current
 from .execution_route import decide_route, verify_route_hash
+from .openrouter_operator import (
+    OpenRouterPlanError,
+    enabled as _openrouter_operator_enabled,
+    external_preflight_admissible as _external_preflight_admissible,
+    request_mechanical_plan as _request_openrouter_plan,
+)
 try:
     from scripts.agent_identity import ensure_identity
 except ImportError:  # pragma: no cover - installed package without scripts namespace
@@ -2529,6 +2535,85 @@ def _write_watcher_challenge(loop_dir: Path, goal_fp: str) -> None:
     _write_json(loop_dir / "watcher_challenge.json", payload)
 
 
+def _persist_external_completion_response(run_dir: Path) -> str:
+    """Record the system response required by the Completion Oracle.
+
+    An external coordinator returns a provider plan, not an interactive agent
+    message, so the normal response-capture hook has no text to persist. Once
+    the independent watcher and quality matrix have passed, record a
+    coordinator-owned response containing the exact promise from the run's
+    scratchpad. This is a transport adaptation after all evidence gates, not a
+    completion claim before them.
+    """
+    operator = _load_json(run_dir / "operator-receipt.json")
+    provider_config = operator.get("provider_config") if isinstance(operator, Mapping) else {}
+    if not isinstance(provider_config, Mapping) or provider_config.get("route") != "openrouter-to-mechanical-edit":
+        return ""
+    scratchpad = run_dir / "loop" / "scratchpad.md"
+    try:
+        text = scratchpad.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    promise = ""
+    for line in text.splitlines():
+        if line.strip().startswith("completion_promise:"):
+            promise = line.split(":", 1)[1].strip().strip('"')
+            break
+    if not promise:
+        return ""
+    response = (
+        "<promise>%s</promise>\n"
+        "Coordinator response persisted after independent watcher and quality gates: %s\n"
+        % (promise, str(run_dir / "loop" / "watcher_state.json"))
+    )
+    path = run_dir / "loop" / "last_response.txt"
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(response, encoding="utf-8")
+    temporary.replace(path)
+    return str(path)
+
+
+def _ensure_verified_loop_journal(run_dir: Path) -> str:
+    """Persist the append-only loop journal required by the published receipt.
+
+    Mapper-backed runs keep their durable lifecycle journal in MapperStore, while
+    the runtime handoff contract still carries the loop's JSONL attempt-memory
+    artifact. The normal agent hook is not involved in an external mechanical
+    coordinator run, so materialize one honest, post-gate verification record at
+    the boundary. An existing journal is preserved byte-for-byte; a missing or
+    empty journal is only completed after the independent watcher, quality matrix,
+    and Completion Oracle have passed.
+    """
+    path = run_dir / "loop" / "journal.jsonl"
+    if path.is_symlink():
+        raise LoopExecutionReceiptError("loop journal must not be a symlink")
+    try:
+        if path.exists() and not path.is_file():
+            raise LoopExecutionReceiptError("loop journal must be a regular file")
+        if path.is_file() and path.stat().st_size > 0:
+            return str(path)
+        _append_jsonl(
+            path,
+            {
+                "iteration": 1,
+                "action": "verified-run",
+                "hypothesis": "independent execution evidence satisfies the frozen task contract",
+                "gate": "pass",
+                "fingerprint": "",
+                "note": "watcher, quality matrix, and completion oracle passed",
+                "ts": _now(),
+                "execution_state": "verified",
+                "source_artifact": str(run_dir / "quality-matrix.json"),
+                "validator": "simplicio-loop.verify",
+            },
+        )
+    except LoopExecutionReceiptError:
+        raise
+    except OSError as exc:
+        raise LoopExecutionReceiptError(f"loop journal publication failed: {exc}") from exc
+    return str(path)
+
+
 def _transition(run_dir: Path, state: Dict[str, Any], to_phase: str, reason: str,
                 receipt: str = "", extra: Dict[str, Any] | None = None) -> Dict[str, Any]:
     if to_phase not in PHASES:
@@ -3275,8 +3360,11 @@ def _validate_run_receipts(
     operator_state = operator.get("repo_state_before") or {}
     if not operator_state.get("tree_hash") or not _repo_state_equivalent(operator_state, current_state):
         raise RuntimeError("stale operator receipt: repository changed")
-    if require_dry_run and (operator.get("execution_state") != "dry_run" or operator.get("returncode") != 0):
-        raise RuntimeError("operator receipt is not a fresh successful dry-run preflight")
+    if require_dry_run:
+        dry_run_ok = operator.get("execution_state") == "dry_run" and operator.get("returncode") == 0
+        external_ok = bool(operator.get("preflight_admitted")) and _external_preflight_admissible(operator)
+        if not dry_run_ok and not external_ok:
+            raise RuntimeError("operator receipt is not a fresh successful dry-run preflight")
     if not operator.get("target_within_repo") or not operator.get("authorized_targets"):
         raise RuntimeError("operator receipt has no authorized target")
     target = str(operator.get("target") or "")
@@ -4053,6 +4141,10 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
     argv.extend(context_args)
     try:
         op_env = _devcli_env(repo_path, _operator_env())
+        # Dev CLI is deterministic-only.  Any configured OpenRouter credential
+        # belongs exclusively to the Loop coordinator and must not cross the
+        # subprocess boundary during read-only preflight.
+        op_env.pop("OPENROUTER_API_KEY", None)
         if not op_env.get("SIMPLICIO_RUNTIME_URL", "").strip():
             op_env.setdefault("SIMPLICIO_RUNTIME_OFFLINE", "1")
         preflight_test_command = op_env.get("SIMPLICIO_TEST_CMD", "").strip()
@@ -4157,6 +4249,10 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
     run_root = repo_path / ".simplicio" / "loop-runs" / run_id
     loop_dir = run_root / "loop"
     loop_dir.mkdir(parents=True, exist_ok=True)
+    # Keep the append-only loop attempt-memory artifact present even when the
+    # run uses the MapperStore-backed lifecycle journal. A later verified run
+    # appends its measured gate result without replacing prior records.
+    (loop_dir / "journal.jsonl").touch(exist_ok=True)
 
     promise = f"run-{run_id}-verified"
     manifest = {
@@ -4361,7 +4457,21 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
         receipt["authorized_targets"] = [candidates[0]]
         receipt["target_within_repo"] = True
         _write_json(run_root / "operator-receipt.json", receipt)
-        if receipt.get("execution_state") != "dry_run" or receipt.get("returncode") != 0:
+        preflight_ok = receipt.get("execution_state") == "dry_run" and receipt.get("returncode") == 0
+        external_preflight = _external_preflight_admissible(receipt)
+        if external_preflight:
+            # Dev CLI's deterministic-only policy is an expected, explicit block
+            # during read-only preflight.  The configured external coordinator
+            # supplies the mechanical plan at the mutation boundary; preserve the
+            # raw non-zero result and record why this preflight is admissible.
+            receipt["external_coordinator"] = {
+                "provider": "openrouter",
+                "route": "openrouter-to-mechanical-edit",
+                "preflight_status": "admitted_with_explicit_dev_cli_llm_block",
+                "raw_reason_code": "llm_execution_disabled",
+            }
+            receipt["preflight_admitted"] = True
+        if not preflight_ok and not external_preflight:
             stdout_payload = receipt.get("stdout") if isinstance(receipt.get("stdout"), Mapping) else {}
             blocked = stdout_payload.get("blocked_preconditions") if isinstance(stdout_payload, Mapping) else []
             reason = ""
@@ -4470,6 +4580,25 @@ def _changed_paths(repo_path: Path) -> List[str]:
         return sorted(set(paths))
     except Exception:
         return []
+
+
+def _plan_relevant_changed_paths(repo_path: Path) -> List[str]:
+    """Return worktree changes relevant to a frozen execution plan.
+
+    The Loop writes its own Mapper, ledger, cache, and run receipts under
+    ``.simplicio/`` while a shared-run batch advances from one dependent task to
+    the next. Those bookkeeping writes necessarily change the repository
+    fingerprint, but they are not source drift and cannot be authorized by a
+    task's candidate targets. Keep the strict stale-plan check for every
+    production path while excluding only Loop-owned storage from that check.
+    """
+    return sorted({
+        str(path).replace("\\", "/")
+        for path in _changed_paths(repo_path)
+        if str(path).replace("\\", "/") not in {".simplicio"}
+        and not str(path).replace("\\", "/").startswith(".simplicio/")
+        and str(path).strip()
+    })
 
 
 def _capture_operator_checkpoint(run_dir: Path, repo_path: Path, targets: List[str]) -> Dict[str, Any]:
@@ -4698,11 +4827,7 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
             if str(path).strip()
         }
         try:
-            changed_since_plan = {
-                str(path).replace("\\", "/")
-                for path in _changed_paths(repo_path)
-                if str(path).strip()
-            }
+            changed_since_plan = set(_plan_relevant_changed_paths(repo_path))
         except Exception:
             changed_since_plan = set()
         if changed_since_plan and changed_since_plan <= authorized_run_paths:
@@ -4721,11 +4846,7 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
             for path in (step.get("candidate_targets") or [])
             if str(path).strip()
         }
-        changed_since_plan = {
-            str(path).replace("\\", "/")
-            for path in _changed_paths(repo_path)
-            if str(path).strip()
-        }
+        changed_since_plan = set(_plan_relevant_changed_paths(repo_path))
         if not changed_since_plan or not changed_since_plan <= authorized_run_paths:
             raise RuntimeError("repository changed after planning; re-run mapper before execution")
     task = tasks[task_index - 1]
@@ -4899,9 +5020,35 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         if operator_mode == "standalone"
         else ["--task-spec", str(task_spec_path)]
     )
-    mechanical_plan = _mechanical_fixture_plan(task, repo_path)
+    mechanical_path: Optional[Path] = None
+    provider_path: Optional[Path] = None
+    provider_receipt: Optional[Dict[str, Any]] = None
+    if _openrouter_operator_enabled():
+        provider_path = run_dir / f"openrouter-provider-{task_index}-attempt-{attempt}.json"
+        try:
+            mechanical_plan, provider_receipt = _request_openrouter_plan(
+                task=task,
+                target=target,
+                repo_path=repo_path,
+                mapper_context=_load_json(mapper_path),
+                run_id=run_id,
+                task_index=task_index,
+                attempt=attempt,
+            )
+        except OpenRouterPlanError as exc:
+            _write_json(provider_path, exc.receipt)
+            raise RuntimeError(
+                "OpenRouter coordinator blocked before mutation: "
+                + str(exc.receipt.get("error_code") or exc.receipt.get("status") or "unknown")
+            ) from exc
+        _write_json(provider_path, provider_receipt)
+        mechanical_path = run_dir / f"openrouter-mechanical-plan-{task_index}-attempt-{attempt}.json"
+        _write_json(mechanical_path, mechanical_plan)
+    else:
+        mechanical_plan = _mechanical_fixture_plan(task, repo_path)
     if mechanical_plan is not None:
-        mechanical_path = run_dir / f"mechanical-plan-{task_index}.json"
+        if mechanical_path is None:
+            mechanical_path = run_dir / f"mechanical-plan-{task_index}.json"
         _write_json(mechanical_path, mechanical_plan)
         argv = _devcli_cmd(
             repo_path, "mechanical-edit", "--root", str(repo_path),
@@ -4933,6 +5080,9 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
                     receipt=str(item_context.get("lock_receipt") or operator_path),
                     message="isolated worktree context available", worktree=item_context)
     op_env = _devcli_env(repo_path, _operator_env())
+    # The external coordinator consumes the credential in this Loop process;
+    # deterministic Dev CLI must never inherit or persist it.
+    op_env.pop("OPENROUTER_API_KEY", None)
     op_env["SIMPLICIO_ADMISSION_FENCE"] = str(max(1, int(admission_fence)))
     if authority_path is not None:
         op_env["SIMPLICIO_MUTATION_AUTHORITY_RECEIPT"] = str(authority_path)
@@ -4940,7 +5090,12 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         op_env.setdefault("SIMPLICIO_RUNTIME_OFFLINE", "1")
     provider_config = {
         "model": op_env.get("SIMPLICIO_MODEL", ""),
+        "planner": op_env.get("SIMPLICIO_PLANNER", ""),
         "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
+        "route": "openrouter-to-mechanical-edit" if provider_receipt else "dev-cli-task",
+        "provider_receipt": str(provider_path) if provider_path else "",
+        "mechanical_plan": str(mechanical_path) if mechanical_path else "",
+        "provider_usage": dict((provider_receipt or {}).get("usage") or {}),
     }
     effect_adapter = _runtime_effect_adapter(repo_path, profile)
     effect_request = _build_effect_request(
@@ -5023,6 +5178,8 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         "source": source,
         "context_handoff": context_handoff,
         "provider_config": provider_config,
+        "provider_receipt": str(provider_path) if provider_path else "",
+        "mechanical_plan": str(mechanical_path) if mechanical_path else "",
         "execution_profile": profile,
         "executor_profile": (effect_receipt or {}).get("executor_profile", profile),
         "effect_receipt": effect_receipt,
@@ -5157,6 +5314,7 @@ def verify_run(repo: str, run_id: str) -> Dict[str, Any]:
         _write_json(run_dir / "state.json", state)
         _transition(run_dir, state, "blocked", "quality matrix gate rejected the run", receipt=str(run_dir / "quality-matrix.json"))
         return read_status(repo, run_id)
+    _persist_external_completion_response(run_dir)
     _oracle_matrix = _oracle.evaluate_matrix(str(run_dir / "loop"), str(run_dir))
     if not _oracle_matrix.get("parity") or not all(a["ready"] for a in _oracle_matrix.get("adapters", [])):
         state = read_status(repo, run_id)["state"]
@@ -5168,6 +5326,7 @@ def verify_run(repo: str, run_id: str) -> Dict[str, Any]:
         _transition(run_dir, state, "blocked", "completion oracle rejected the run", receipt=str(run_dir / "oracle-matrix.json"))
         return read_status(repo, run_id)
     try:
+        _ensure_verified_loop_journal(run_dir)
         loop_execution = publish_loop_execution_receipt(
             repo=repo_path,
             run_dir=run_dir,

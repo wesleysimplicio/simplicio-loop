@@ -83,6 +83,69 @@ def test_repo_state_equivalent_ignores_dirty_status_noise_when_tree_is_stable():
     assert runner_mod._repo_state_equivalent(before, {**after, "head": "def456"}) is False
 
 
+def test_plan_relevant_changed_paths_ignores_loop_owned_storage(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        runner_mod,
+        "_changed_paths",
+        lambda _repo: [
+            ".simplicio/events.jsonl",
+            ".simplicio/loop-runs/run-1/state.json",
+            "site/checkers.html",
+            "requirements/checkers-tasks.md",
+        ],
+    )
+
+    assert runner_mod._plan_relevant_changed_paths(tmp_path) == [
+        "requirements/checkers-tasks.md",
+        "site/checkers.html",
+    ]
+
+
+def test_external_completion_response_is_persisted_after_gated_execution(tmp_path):
+    run_dir = tmp_path / "run"
+    loop_dir = run_dir / "loop"
+    loop_dir.mkdir(parents=True)
+    (loop_dir / "scratchpad.md").write_text(
+        'completion_promise: "run-123-verified"\n', encoding="utf-8"
+    )
+    (run_dir / "operator-receipt.json").write_text(json.dumps({
+        "provider_config": {"route": "openrouter-to-mechanical-edit"},
+    }), encoding="utf-8")
+
+    path = runner_mod._persist_external_completion_response(run_dir)
+
+    assert path.endswith("/loop/last_response.txt")
+    assert (loop_dir / "last_response.txt").read_text(encoding="utf-8") == (
+        "<promise>run-123-verified</promise>\n"
+        "Coordinator response persisted after independent watcher and quality gates: "
+        f"{loop_dir / 'watcher_state.json'}\n"
+    )
+
+
+def test_verified_external_run_materializes_append_only_loop_journal(tmp_path):
+    run_dir = tmp_path / "run"
+    (run_dir / "loop").mkdir(parents=True)
+
+    path = runner_mod._ensure_verified_loop_journal(run_dir)
+
+    assert path.endswith("/loop/journal.jsonl")
+    record = json.loads((run_dir / "loop" / "journal.jsonl").read_text(encoding="utf-8"))
+    assert record["gate"] == "pass"
+    assert record["execution_state"] == "verified"
+
+
+def test_verified_loop_journal_does_not_rewrite_existing_attempt_memory(tmp_path):
+    run_dir = tmp_path / "run"
+    loop_dir = run_dir / "loop"
+    loop_dir.mkdir(parents=True)
+    original = '{"iteration":1,"action":"attempt","hypothesis":"h","gate":"blocked","fingerprint":"abc123def456","note":"n","ts":"2026-01-01T00:00:00Z"}\n'
+    (loop_dir / "journal.jsonl").write_text(original, encoding="utf-8")
+
+    runner_mod._ensure_verified_loop_journal(run_dir)
+
+    assert (loop_dir / "journal.jsonl").read_text(encoding="utf-8") == original
+
+
 def test_operator_env_defaults_to_codex_gpt54_medium(monkeypatch):
     monkeypatch.delenv("SIMPLICIO_MODEL", raising=False)
     monkeypatch.delenv("SIMPLICIO_CODEX_EFFORT", raising=False)
