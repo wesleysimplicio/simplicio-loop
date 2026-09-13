@@ -150,12 +150,14 @@ def _compact_mapper_context(context: Mapping[str, Any]) -> dict[str, Any]:
     return {"truncated_context_sha256": _sha256_text(encoded), "schema": context.get("schema")}
 
 
-def _prompt(*, task: Mapping[str, Any], target: str, mapper_context: Mapping[str, Any], current: str | None) -> str:
+def _prompt(*, task: Mapping[str, Any], target: str, mapper_context: Mapping[str, Any],
+            current: str | None, repair_feedback: str = "") -> str:
     task_text = str(task.get("original_text") or task.get("goal") or "").strip()
     task_type = "creation" if _creation_task(task) else "editing"
     current_block = "<target does not exist>" if current is None else current
     if len(current_block) > MAX_CURRENT_FILE_CHARS:
         raise ValueError("current target is too large for the bounded provider prompt")
+    repair_block = str(repair_feedback or "").strip() or "<none>"
     return """You are a coding worker inside a governed Simplicio run.
 Return ONLY one JSON object with this exact shape:
 {{"files":{{"TARGET":"complete UTF-8 file contents"}}}}
@@ -203,12 +205,16 @@ Current target contents:
 <target>
 {current}
 </target>
+
+Deterministic validator feedback for this proposal:
+{repair_feedback}
 """.format(
         task_type=task_type,
         target=target,
         task_text=task_text,
         mapper=json.dumps(_compact_mapper_context(mapper_context), ensure_ascii=False, sort_keys=True),
         current=current_block,
+        repair_feedback=repair_block,
     )
 
 
@@ -359,7 +365,8 @@ def _validate_and_compile(*, proposal: Mapping[str, Any], target: str, target_pa
 
 def request_mechanical_plan(*, task: Mapping[str, Any], target: str, repo_path: Path,
                             mapper_context: Mapping[str, Any], run_id: str,
-                            task_index: int, attempt: int) -> tuple[dict[str, Any], dict[str, Any]]:
+                            task_index: int, attempt: int,
+                            repair_feedback: str = "") -> tuple[dict[str, Any], dict[str, Any]]:
     """Request and validate one model proposal without applying it."""
     del run_id, task_index, attempt
     env = os.environ
@@ -383,7 +390,10 @@ def request_mechanical_plan(*, task: Mapping[str, Any], target: str, repo_path: 
             raise ValueError("creation task target already exists")
         if not creation and current is None:
             raise ValueError("editing task target does not exist")
-        prompt = _prompt(task=task, target=target, mapper_context=mapper_context, current=current)
+        prompt = _prompt(
+            task=task, target=target, mapper_context=mapper_context, current=current,
+            repair_feedback=repair_feedback,
+        )
         payload = {
             "model": model,
             "temperature": 0,
@@ -471,6 +481,7 @@ def request_mechanical_plan(*, task: Mapping[str, Any], target: str, repo_path: 
         receipt.update({
             "status": "proposal_rejected", "provider_wall_ns": time.perf_counter_ns() - started_ns,
             "error_code": type(exc).__name__,
+            "error_detail": str(exc),
             "model_invoked": True if receipt.get("request_sent") else None,
         })
         raise OpenRouterPlanError("OpenRouter proposal rejected by the deterministic plan validator", receipt=receipt) from exc

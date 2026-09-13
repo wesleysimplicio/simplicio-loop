@@ -128,6 +128,15 @@ except ImportError:  # pragma: no cover - installed package without scripts name
 RUNNER_SCHEMA = "simplicio.run-manifest/v1"
 STATE_SCHEMA = "simplicio.run-state/v1"
 OPERATOR_RECEIPT_SCHEMA = "simplicio.operator-receipt/v0"
+MAX_OPENROUTER_PROPOSAL_ATTEMPTS = 3
+OPENROUTER_NOOP_REPAIR_FEEDBACK = (
+    "The previous proposal was rejected because it was byte-identical to the current target. "
+    "Return a complete replacement file that is observably different while preserving every "
+    "existing behavior and all requested controls. Make one small, concrete, meaningful edit "
+    "directly related to this task; for an HTML target, an accessible attribute on the existing "
+    "live status or edited control is appropriate. Do not merely describe the change; include "
+    "the full changed file in the JSON."
+)
 # Real content/schema/hash/freshness/provenance validation, gating `receipt_status` in
 # `_operator_dispatch_attempt()` below (issue #288: presence of a file must not imply
 # VERIFIED).
@@ -5061,25 +5070,60 @@ def _execute_operator_unleased(repo: str, run_id: str, task_index: int = 1, *,
     mechanical_path: Optional[Path] = None
     provider_path: Optional[Path] = None
     provider_receipt: Optional[Dict[str, Any]] = None
+    provider_receipt_paths: List[str] = []
+    provider_proposal_attempts = 0
     if _openrouter_operator_enabled():
-        provider_path = run_dir / f"openrouter-provider-{task_index}-attempt-{attempt}.json"
-        try:
-            mechanical_plan, provider_receipt = _request_openrouter_plan(
-                task=task,
-                target=target,
-                repo_path=repo_path,
-                mapper_context=_load_json(mapper_path),
-                run_id=run_id,
-                task_index=task_index,
-                attempt=attempt,
-            )
-        except OpenRouterPlanError as exc:
-            _write_json(provider_path, exc.receipt)
+        mapper_context = _load_json(mapper_path)
+        repair_feedback = ""
+        last_provider_error: OpenRouterPlanError | None = None
+        for proposal_attempt in range(1, MAX_OPENROUTER_PROPOSAL_ATTEMPTS + 1):
+            provider_proposal_attempts = proposal_attempt
+            suffix = "" if proposal_attempt == 1 else f"-retry-{proposal_attempt - 1}"
+            provider_path = run_dir / f"openrouter-provider-{task_index}-attempt-{attempt}{suffix}.json"
+            provider_receipt_paths.append(str(provider_path))
+            try:
+                mechanical_plan, provider_receipt = _request_openrouter_plan(
+                    task=task,
+                    target=target,
+                    repo_path=repo_path,
+                    mapper_context=mapper_context,
+                    run_id=run_id,
+                    task_index=task_index,
+                    attempt=attempt,
+                    repair_feedback=repair_feedback,
+                )
+            except OpenRouterPlanError as exc:
+                last_provider_error = exc
+                failed_receipt = dict(exc.receipt)
+                failed_receipt["coordinator_proposal_attempt"] = proposal_attempt
+                _write_json(provider_path, failed_receipt)
+                if (
+                    proposal_attempt < MAX_OPENROUTER_PROPOSAL_ATTEMPTS
+                    and failed_receipt.get("status") == "proposal_rejected"
+                    and failed_receipt.get("error_detail") == "editing plan must change target content"
+                ):
+                    repair_feedback = OPENROUTER_NOOP_REPAIR_FEEDBACK
+                    continue
+                raise RuntimeError(
+                    "OpenRouter coordinator blocked before mutation: "
+                    + str(failed_receipt.get("error_detail")
+                          or failed_receipt.get("error_code")
+                          or failed_receipt.get("status")
+                          or "unknown")
+                ) from exc
+            provider_receipt = dict(provider_receipt or {})
+            provider_receipt["coordinator_proposal_attempt"] = proposal_attempt
+            _write_json(provider_path, provider_receipt)
+            last_provider_error = None
+            break
+        if last_provider_error is not None:
             raise RuntimeError(
                 "OpenRouter coordinator blocked before mutation: "
-                + str(exc.receipt.get("error_code") or exc.receipt.get("status") or "unknown")
-            ) from exc
-        _write_json(provider_path, provider_receipt)
+                + str(last_provider_error.receipt.get("error_detail")
+                      or last_provider_error.receipt.get("error_code")
+                      or last_provider_error.receipt.get("status")
+                      or "unknown")
+            ) from last_provider_error
         mechanical_path = run_dir / f"openrouter-mechanical-plan-{task_index}-attempt-{attempt}.json"
         _write_json(mechanical_path, mechanical_plan)
     else:
@@ -5132,6 +5176,8 @@ def _execute_operator_unleased(repo: str, run_id: str, task_index: int = 1, *,
         "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
         "route": "openrouter-to-mechanical-edit" if provider_receipt else "dev-cli-task",
         "provider_receipt": str(provider_path) if provider_path else "",
+        "provider_receipts": provider_receipt_paths,
+        "provider_proposal_attempts": provider_proposal_attempts,
         "mechanical_plan": str(mechanical_path) if mechanical_path else "",
         "provider_usage": dict((provider_receipt or {}).get("usage") or {}),
     }

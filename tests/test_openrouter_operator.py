@@ -120,6 +120,31 @@ def test_edit_proposal_cannot_be_a_byte_identical_noop(monkeypatch, tmp_path):
 
     assert error.value.receipt["status"] == "proposal_rejected"
     assert error.value.receipt["error_code"] == "ValueError"
+    assert error.value.receipt["error_detail"] == "editing plan must change target content"
+
+
+def test_edit_repair_feedback_is_sent_to_the_provider(monkeypatch, tmp_path):
+    _env(monkeypatch)
+    target = tmp_path / "site" / "checkers.html"
+    target.parent.mkdir()
+    current = "<!doctype html>\n<html><body><script>start()</script></body></html>\n"
+    edited = "<!doctype html>\n<html><body><p data-edit=\"yes\">changed</p><script>start()</script></body></html>\n"
+    target.write_text(current, encoding="utf-8")
+    prompts = []
+
+    def provider(request, timeout):
+        del timeout
+        prompts.append(json.loads(request.data.decode("utf-8"))["messages"][1]["content"])
+        return _response(json.dumps({"files": {"site/checkers.html": edited}}))
+
+    monkeypatch.setattr("urllib.request.urlopen", provider)
+    request_mechanical_plan(
+        task=_task("edição"), target="site/checkers.html", repo_path=tmp_path,
+        mapper_context={"schema": "mapper"}, run_id="run-repair", task_index=2, attempt=1,
+        repair_feedback="Return a materially different complete file.",
+    )
+
+    assert prompts and "Return a materially different complete file." in prompts[0]
 
 
 def test_invalid_target_is_rejected_before_provider_request(monkeypatch, tmp_path):
