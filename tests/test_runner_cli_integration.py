@@ -101,6 +101,24 @@ def test_plan_relevant_changed_paths_ignores_loop_owned_storage(monkeypatch, tmp
     ]
 
 
+def test_loop_generated_framework_artifacts_do_not_change_repo_fingerprint(tmp_path):
+    before = runner_mod._repo_fingerprint(tmp_path)
+    generated = [
+        tmp_path / ".agents" / "_generated" / "run-1" / "task.agent.md",
+        tmp_path / ".catalog" / "_generated" / "run-1" / "generation-receipt.json",
+        tmp_path / ".catalog" / "project-capabilities.json",
+        tmp_path / ".skills" / "_generated" / "run-1" / "task" / "SKILL.md",
+    ]
+    for path in generated:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("framework-owned\n", encoding="utf-8")
+
+    after = runner_mod._repo_fingerprint(tmp_path)
+
+    assert before["tree_hash"] == after["tree_hash"]
+    assert before["dirty_status_hash"] == after["dirty_status_hash"]
+
+
 def test_external_completion_response_is_persisted_after_gated_execution(tmp_path):
     run_dir = tmp_path / "run"
     loop_dir = run_dir / "loop"
@@ -1151,6 +1169,47 @@ def test_tick_executes_real_operator_boundary_and_binds_receipt(tmp_path, monkey
     assert receipt["task_contract_hash"]
     assert receipt["plan_hash"]
     assert receipt["target_within_repo"] is True
+    assert (run_dir / "operator-receipt-1.json").is_file()
+
+
+def test_direct_tick_reuses_run_authority_attempt_after_prior_task(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIMPLICIO_STORAGE_ROUTE", "mapper")
+    repo, _, armed_payload, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
+    run_id = armed_payload["manifest"]["run_id"]
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    state["attempts"] = 1
+    (run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+
+    captured = {}
+
+    class FakeLease:
+        attempt_id = "attempt-2"
+        lease_id = "lease-2"
+        fence_token = 2
+
+    class FakeOperations:
+        def complete(self, lease, *, status, receipt):
+            return {"status": status, "receipt": receipt}
+
+    monkeypatch.setattr(
+        runner_mod,
+        "_claim_mapper_operation_attempt",
+        lambda *args, **kwargs: (FakeOperations(), SimpleNamespace(lease=FakeLease())),
+    )
+
+    def fake_unleased(*args, **kwargs):
+        captured["authority_attempt"] = kwargs["authority_attempt"]
+        return {
+            "state": {
+                "operator": {"ready": True, "execution_state": "applied", "receipt": "operator.json"},
+                "evidence": {"receipt": "evidence.json"},
+            }
+        }
+
+    monkeypatch.setattr(runner_mod, "_execute_operator_unleased", fake_unleased)
+    runner_mod.execute_operator(str(repo), run_id, task_index=1)
+
+    assert captured["authority_attempt"] == 1
 
 
 def test_tick_rolls_back_failed_operator_when_change_stays_within_authorized_target(tmp_path, monkeypatch):

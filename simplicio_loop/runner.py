@@ -1669,6 +1669,41 @@ def _execute_operator_effect(*, profile: str, adapter: RuntimeEffectAdapter,
 
 
 
+_LOOP_GENERATED_PATH_PREFIXES = (
+    ".agents/_generated/",
+    ".catalog/_generated/",
+    ".skills/_generated/",
+)
+_LOOP_GENERATED_PATHS = {".catalog/project-capabilities.json"}
+
+
+def _normalized_repo_path(path: str) -> str:
+    """Normalize a Git path without stripping its meaningful leading dot."""
+    normalized = str(path).replace("\\", "/").strip()
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized.lstrip("/").lower()
+
+
+def _is_loop_generated_path(path: str) -> bool:
+    normalized = _normalized_repo_path(path)
+    return normalized in _LOOP_GENERATED_PATHS or any(
+        normalized.startswith(prefix) for prefix in _LOOP_GENERATED_PATH_PREFIXES
+    )
+
+
+def _is_loop_owned_status_path(path: str) -> bool:
+    normalized = _normalized_repo_path(path)
+    return (
+        normalized.startswith(".simplicio/orchestrator/")
+        or normalized.startswith(".simplicio/")
+        or normalized == ".simplicio-fast"
+        or normalized.startswith(".simplicio-fast/")
+        or normalized.startswith(".claude/")
+        or _is_loop_generated_path(normalized)
+    )
+
+
 def _repo_fingerprint(repo_path: Path) -> Dict[str, str]:
     """Return a deterministic content fingerprint for mapper freshness gates.
 
@@ -1680,13 +1715,22 @@ def _repo_fingerprint(repo_path: Path) -> Dict[str, str]:
     digest = hashlib.sha256()
     files = []
     for root, dirs, names in os.walk(repo_path):
-        dirs[:] = [d for d in dirs if d not in {
-            ".git", ".simplicio/orchestrator", ".simplicio", ".simplicio-fast", "__pycache__"
-        }]
+        relative_root = Path(root).relative_to(repo_path).as_posix()
+        if relative_root == ".":
+            relative_root = ""
+        dirs[:] = [
+            d for d in dirs
+            if d not in {".git", ".simplicio/orchestrator", ".simplicio", ".simplicio-fast", "__pycache__"}
+            and not _is_loop_generated_path(
+                f"{relative_root}/{d}" if relative_root else d
+            )
+        ]
         for name in names:
             path = Path(root) / name
             try:
                 rel = path.relative_to(repo_path).as_posix()
+                if _is_loop_generated_path(rel):
+                    continue
                 data = path.read_bytes()
             except (OSError, ValueError):
                 continue
@@ -1709,15 +1753,8 @@ def _repo_fingerprint(repo_path: Path) -> Dict[str, str]:
                     continue
                 path_text = line[3:].strip()
                 parts = [part.strip() for part in path_text.split("->")] if "->" in path_text else [path_text]
-                normalized = [part.replace("\\", "/").lstrip("./").lower() for part in parts if part.strip()]
-                if normalized and all(
-                    item.startswith(".simplicio/orchestrator/")
-                    or item.startswith(".simplicio/")
-                    or item == ".simplicio-fast"
-                    or item.startswith(".simplicio-fast/")
-                    or item.startswith(".claude/")
-                    for item in normalized
-                ):
+                normalized = [_normalized_repo_path(part) for part in parts if part.strip()]
+                if normalized and all(_is_loop_owned_status_path(item) for item in normalized):
                     continue
                 filtered.append(line)
             status = "\n".join(filtered).strip()
@@ -4597,6 +4634,7 @@ def _plan_relevant_changed_paths(repo_path: Path) -> List[str]:
         for path in _changed_paths(repo_path)
         if str(path).replace("\\", "/") not in {".simplicio"}
         and not str(path).replace("\\", "/").startswith(".simplicio/")
+        and not _is_loop_generated_path(str(path))
         and str(path).strip()
     })
 
@@ -4747,7 +4785,7 @@ def conclude_run(repo: str, run_id: str, *, force: bool = False) -> Dict[str, An
     return read_status(repo, run_id)
 
 
-def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
+def _execute_operator_unleased(repo: str, run_id: str, task_index: int = 1, *,
                       attempt_coordinator: Optional[AttemptCoordinator] = None,
                       guarded_attempt: Any = None,
                       authority_receipt: Optional[Mapping[str, Any]] = None,
@@ -5208,6 +5246,11 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
     }
     receipt["receipt_hash"] = _operator_receipt_hash(receipt)
     _write_json(operator_path, receipt)
+    # A run may execute multiple ordered tasks through the direct ``tick`` API.
+    # The historical run-level path is intentionally preserved for compatibility,
+    # but each task also needs an immutable receipt of its own so a later task
+    # cannot overwrite the evidence used to validate the earlier one.
+    _write_json(run_dir / f"operator-receipt-{task_index}.json", receipt)
     state = status["state"]
     if rollback.get("restored"):
         _emit_event(run_dir, state, "rollback", receipt=str(operator_path),
@@ -5238,6 +5281,140 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
                     blocker="" if evidence.get("status") == "VERIFIED" else "evidence_unverified",
                     message="test and evidence gate evaluated", status=evidence.get("status", "UNVERIFIED"))
     return read_status(repo, run_id)
+
+
+def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
+                     attempt_coordinator: Optional[AttemptCoordinator] = None,
+                     guarded_attempt: Any = None,
+                     authority_receipt: Optional[Mapping[str, Any]] = None,
+                     authority_attempt: Optional[int] = None,
+                     admission_fence: int = 1,
+                     owned_process_registry: Any = None,
+                     owned_task_id: str = "") -> Dict[str, Any]:
+    """Execute one task, acquiring a Mapper OperationsStore lease for direct ticks.
+
+    Batch workers already claim a Mapper lease in ``_operator_dispatch_attempt`` and pass
+    it as ``guarded_attempt``.  The public ``tick`` command calls this boundary directly,
+    so it must acquire the same lease itself when the Mapper route is selected; otherwise
+    the Mapper-backed Hookwall correctly rejects the synthetic ``loop-run:<id>`` identity
+    with ``STALE_FENCE``.
+    """
+    if guarded_attempt is not None:
+        return _execute_operator_unleased(
+            repo, run_id, task_index=task_index,
+            attempt_coordinator=attempt_coordinator,
+            guarded_attempt=guarded_attempt,
+            authority_receipt=authority_receipt,
+            authority_attempt=authority_attempt,
+            admission_fence=admission_fence,
+            owned_process_registry=owned_process_registry,
+            owned_task_id=owned_task_id,
+        )
+
+    status = read_status(repo, run_id)
+    run_dir = Path(status["run_dir"])
+    storage_route = _verify_storage_route(run_dir)
+    if storage_route.get("selected") != StorageRoute.MAPPER.value:
+        return _execute_operator_unleased(
+            repo, run_id, task_index=task_index,
+            attempt_coordinator=attempt_coordinator,
+            guarded_attempt=None,
+            authority_receipt=authority_receipt,
+            authority_attempt=authority_attempt,
+            admission_fence=admission_fence,
+            owned_process_registry=owned_process_registry,
+            owned_task_id=owned_task_id,
+        )
+
+    contract = _load_json(run_dir / "task-contract.json")
+    plan = _load_json(run_dir / "plan.json")
+    tasks = list(contract.get("tasks") or [])
+    if task_index < 1 or task_index > len(tasks):
+        raise ValueError(f"task index out of range: {task_index}")
+    step = (plan.get("steps") or [])[task_index - 1]
+    targets = [
+        str(path) for path in (step.get("candidate_targets") or [])
+        if str(path).strip()
+    ]
+    task = tasks[task_index - 1]
+    task_id = str(task.get("id") or f"{run_id}-task-{task_index}")
+    worker_id = f"tick-{run_id}-{task_index}"
+    # ``planning-receipt.json`` authorizes the armed run, while ``state.attempts``
+    # counts every task mutation in that run.  A direct tick for task 2 therefore
+    # may have a local execution attempt of 2 but must still validate against the
+    # run-level authority attempt minted during arm (normally 1).  Batch dispatch
+    # supplies this value explicitly; direct ticks need to recover it here.
+    if authority_attempt is None:
+        planning_receipt = _load_json(run_dir / "planning-receipt.json")
+        authority_attempt = max(1, int(planning_receipt.get("attempt") or 1))
+    mapper_operations, mapper_attempt = _claim_mapper_operation_attempt(
+        Path(status["manifest"]["repo"]).resolve(),
+        run_id=run_id,
+        task_index=task_index,
+        task_id=task_id,
+        worker_id=worker_id,
+        targets=targets,
+    )
+    try:
+        result = _execute_operator_unleased(
+            repo, run_id, task_index=task_index,
+            attempt_coordinator=attempt_coordinator,
+            guarded_attempt=mapper_attempt,
+            authority_receipt=authority_receipt,
+            authority_attempt=authority_attempt,
+            admission_fence=admission_fence,
+            owned_process_registry=owned_process_registry,
+            owned_task_id=owned_task_id,
+        )
+    except Exception:
+        try:
+            mapper_operations.release(mapper_attempt.lease)
+        except Exception:
+            pass
+        raise
+
+    result_state = result.get("state") or {}
+    operator_state = result_state.get("operator") or {}
+    execution_state = str(operator_state.get("execution_state") or "")
+    operator_receipt = str(operator_state.get("receipt") or "")
+    evidence_receipt = str((result_state.get("evidence") or {}).get("receipt") or "")
+    completed = bool(operator_state.get("ready")) and execution_state in {"applied", "no_change"}
+    completion_payload = {
+        "run_id": run_id,
+        "task_id": task_id,
+        "task_index": task_index,
+        "operator_receipt": operator_receipt,
+        "evidence_receipt": evidence_receipt,
+        "status": "completed" if completed else "failed",
+    }
+    try:
+        completion = mapper_operations.complete(
+            mapper_attempt.lease,
+            status="completed" if completed else "failed",
+            receipt=completion_payload,
+        )
+    except Exception:
+        try:
+            mapper_operations.release(mapper_attempt.lease)
+        except Exception:
+            pass
+        raise
+    completion_path = run_dir / f"mapper-operation-completion-{task_index}.json"
+    _write_json(completion_path, {
+        "schema": "simplicio.loop.mapper-operation-completion/v1",
+        "status": "completed" if completed else "failed",
+        "run_id": run_id,
+        "task_id": task_id,
+        "task_index": task_index,
+        "worker_id": worker_id,
+        "attempt_id": mapper_attempt.lease.attempt_id,
+        "lease_id": mapper_attempt.lease.lease_id,
+        "fence_token": mapper_attempt.lease.fence_token,
+        "operator": completion_payload,
+        "mapper": completion,
+    })
+    result["mapper_operation_completion"] = str(completion_path)
+    return result
 
 
 def verify_run(repo: str, run_id: str) -> Dict[str, Any]:
