@@ -990,6 +990,67 @@ def _parse_effect_stdout(value: Any) -> Dict[str, Any]:
         return dict(parsed) if isinstance(parsed, dict) else {"raw": redact_sensitive_text(value)}
     return {}
 
+
+def _deterministic_no_mutation_proof(
+    outcome: Mapping[str, Any], *, source_hash: str, repo_path: Path,
+) -> Dict[str, Any] | None:
+    """Prove a failed operator stopped before mutation, conservatively.
+
+    A non-zero exit code alone is not proof: a process may have written files
+    before failing.  Reconciliation is allowed only for the Dev CLI's explicit
+    blocked result, with ``applied=false``, no reported files/errors, and an
+    unchanged source-tree fingerprint.  Timeouts, runtime uncertainty, and
+    ambiguous output remain ``unknown``.
+    """
+    if outcome.get("uncertain"):
+        return None
+    returncode = outcome.get("returncode")
+    if isinstance(returncode, bool) or not isinstance(returncode, int) or returncode == 0:
+        return None
+    stdout = outcome.get("stdout")
+    if not isinstance(stdout, Mapping):
+        return None
+    if stdout.get("status") != "blocked" or stdout.get("applied") is not False:
+        return None
+    blocked = stdout.get("blocked_preconditions")
+    if not isinstance(blocked, list) or not blocked:
+        return None
+    codes: List[str] = []
+    for item in blocked:
+        if not isinstance(item, Mapping):
+            return None
+        code = str(item.get("code") or item.get("reason") or "").strip()
+        if not code:
+            return None
+        codes.append(code)
+    files = stdout.get("files")
+    if files not in (None, []):
+        return None
+    errors = stdout.get("errors")
+    if errors not in (None, []):
+        return None
+
+    after = _repo_fingerprint(repo_path)
+    if not source_hash or after.get("tree_hash") != source_hash:
+        return None
+    proof: Dict[str, Any] = {
+        "schema": "simplicio.loop.effect-reconciliation-proof/v1",
+        "outcome": "failed",
+        "reason_code": "deterministic_no_mutation",
+        "returncode": returncode,
+        "operator_source": str(outcome.get("source") or ""),
+        "blocked_codes": sorted(set(codes)),
+        "applied": False,
+        "files_changed": [],
+        "errors": [],
+        "before_tree_hash": source_hash,
+        "after_tree_hash": str(after.get("tree_hash") or ""),
+        "fingerprint_scope": "source_tree_excluding_loop_owned_artifacts",
+        "measured_at": _now(),
+    }
+    proof["proof_hash"] = _hookwall_digest(proof)
+    return proof
+
 def _owned_registry_path(registry: Any, task_id: str) -> Path | None:
     if isinstance(registry, (str, Path)) and task_id:
         digest = hashlib.sha256(str(task_id).encode("utf-8")).hexdigest()[:32]
@@ -1232,7 +1293,10 @@ def _execute_operator_effect_unchecked(*, profile: str, adapter: RuntimeEffectAd
             "stderr": f"timed out after {exc.timeout}s",
             "source": "live_cli",
             "effect_receipt": None,
-            "uncertain": False,
+            # A timeout does not prove that the child stopped before writing.
+            # Keep the Mapper effect unknown until an explicit reconciliation
+            # can establish what happened.
+            "uncertain": True,
         }
 
 
@@ -1607,14 +1671,39 @@ def _execute_operator_effect(*, profile: str, adapter: RuntimeEffectAdapter,
     outcome["hookwall_envelope"] = envelope
     outcome["hookwall_pre_decision"] = pre_decision
     if outcome.get("returncode") != 0 or outcome.get("uncertain"):
-        hookwall_ledger.mark_unresolved(
-            request.idempotency_key,
-            "effect_uncertain" if outcome.get("uncertain") else "effect_not_committed",
-        )
+        unresolved_reason = "effect_uncertain" if outcome.get("uncertain") else "effect_not_committed"
+        hookwall_ledger.mark_unresolved(request.idempotency_key, unresolved_reason)
+        if not outcome.get("uncertain"):
+            proof = _deterministic_no_mutation_proof(
+                outcome,
+                source_hash=source_hash,
+                repo_path=repo_path,
+            )
+            reconcile_failed = getattr(hookwall_ledger, "reconcile_failed", None)
+            if proof is not None and callable(reconcile_failed):
+                try:
+                    reconciliation = reconcile_failed(request.idempotency_key, proof)
+                except Exception as exc:
+                    # Keep the effect unknown if Mapper cannot persist the
+                    # explicit transition.  Completion will therefore remain
+                    # fail-closed instead of claiming a failed lease safely.
+                    outcome["hookwall_reconciliation_error"] = (
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                else:
+                    outcome["hookwall_reconciliation"] = {
+                        "proof": proof,
+                        "mapper": reconciliation,
+                    }
+                    outcome["hookwall_evidence"] = None
+                    outcome["hookwall_reason"] = "effect_failed_no_mutation"
+                    return outcome
+            elif proof is not None:
+                outcome["hookwall_reconciliation_error"] = (
+                    "Hookwall ledger does not expose explicit failed-effect reconciliation"
+                )
         outcome["hookwall_evidence"] = None
-        outcome["hookwall_reason"] = (
-            "effect_uncertain" if outcome.get("uncertain") else "effect_not_committed"
-        )
+        outcome["hookwall_reason"] = unresolved_reason
         return outcome
 
     hookwall_ledger.effect_confirmed(
@@ -5211,7 +5300,14 @@ def _execute_operator_unleased(repo: str, run_id: str, task_index: int = 1, *,
     effect_receipt = effect_outcome.get("effect_receipt")
     uncertain = bool(effect_outcome.get("uncertain"))
     hookwall_evidence = effect_outcome.get("hookwall_evidence")
-    hookwall_verified, hookwall_reason = gate_completion(hookwall_evidence)
+    hookwall_verified, hookwall_gate_reason = gate_completion(hookwall_evidence)
+    # A deterministically rejected operator has no successful Hookwall evidence,
+    # but it may have an explicit Mapper ``failed`` reconciliation.  Preserve
+    # that more precise reason in the durable operator receipt instead of
+    # collapsing every non-success into ``hookwall_evidence_missing``.
+    hookwall_reason = str(
+        effect_outcome.get("hookwall_reason") or hookwall_gate_reason
+    )
     after = _repo_fingerprint(repo_path)
     changed = _changed_paths(repo_path)
     rollback = {"attempted": False, "restored": False, "reason": "not_needed"}
@@ -5276,6 +5372,8 @@ def _execute_operator_unleased(repo: str, run_id: str, task_index: int = 1, *,
         "hookwall_evidence": hookwall_evidence,
         "hookwall_verified": hookwall_verified,
         "hookwall_reason": hookwall_reason,
+        "hookwall_reconciliation": effect_outcome.get("hookwall_reconciliation"),
+        "hookwall_reconciliation_error": effect_outcome.get("hookwall_reconciliation_error", ""),
         "checkpoint": checkpoint,
         "rollback": rollback,
         "failure_fingerprint": "" if returncode == 0 else _operator_failure_fingerprint(returncode, stderr, stdout),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 
 import pytest
 
@@ -124,6 +125,127 @@ def test_standalone_fake_path_remains_functional(tmp_path, monkeypatch):
     assert outcome["source"] == "env_override"
     assert (tmp_path / "standalone.txt").read_text(encoding="utf-8") == "preserved"
     assert gate_completion(outcome["hookwall_evidence"]) == (True, "ok")
+
+
+class _RecordingHookwall:
+    def __init__(self):
+        self.calls = []
+
+    def reserve(self, _envelope, _pre_decision):
+        self.calls.append(("reserve",))
+        return {"action": "EXECUTE", "state": "RESERVED"}
+
+    def mark_unresolved(self, key, reason):
+        self.calls.append(("mark_unresolved", key, reason))
+
+    def reconcile_failed(self, key, receipt):
+        self.calls.append(("reconcile_failed", key, receipt))
+        return {"state": "FAILED", "receipt_hash": "proof"}
+
+
+def test_blocked_operator_with_explicit_no_mutation_proof_reconciles_mapper_effect(
+    tmp_path, monkeypatch
+):
+    ledger = _RecordingHookwall()
+    monkeypatch.setattr(runner, "_hookwall_ledger", lambda *_args, **_kwargs: ledger)
+    monkeypatch.setenv(
+        "SIMPLICIO_LOOP_FAKE_OPERATOR_EXEC_JSON",
+        json.dumps({
+            "returncode": 1,
+            "stdout": {
+                "status": "blocked",
+                "applied": False,
+                "blocked_preconditions": [{"code": "llm_execution_disabled"}],
+                "files": None,
+                "errors": None,
+            },
+        }),
+    )
+    before = runner._repo_fingerprint(tmp_path)
+
+    outcome = runner._execute_operator_effect(
+        profile="standalone",
+        adapter=RuntimeEffectAdapter(profile="standalone"),
+        request=_request(tmp_path),
+        argv=["simplicio-dev-cli", "task"],
+        env={},
+        repo_path=tmp_path,
+        attempt_coordinator=None,
+        guarded_attempt=None,
+        source_hash=before["tree_hash"],
+    )
+
+    assert [call[0] for call in ledger.calls] == [
+        "reserve", "mark_unresolved", "reconcile_failed"
+    ]
+    assert outcome["uncertain"] is False
+    assert outcome["hookwall_reason"] == "effect_failed_no_mutation"
+    assert outcome["hookwall_reconciliation"]["proof"]["blocked_codes"] == [
+        "llm_execution_disabled"
+    ]
+
+
+def test_ambiguous_failed_operator_keeps_mapper_effect_unknown(tmp_path, monkeypatch):
+    ledger = _RecordingHookwall()
+    monkeypatch.setattr(runner, "_hookwall_ledger", lambda *_args, **_kwargs: ledger)
+    monkeypatch.setenv(
+        "SIMPLICIO_LOOP_FAKE_OPERATOR_EXEC_JSON",
+        json.dumps({
+            "returncode": 1,
+            "stdout": {
+                "status": "blocked",
+                "applied": False,
+                "blocked_preconditions": [{"code": "operator_failed"}],
+                "files": [{"path": "site/checkers.html"}],
+                "errors": None,
+            },
+        }),
+    )
+    before = runner._repo_fingerprint(tmp_path)
+
+    outcome = runner._execute_operator_effect(
+        profile="standalone",
+        adapter=RuntimeEffectAdapter(profile="standalone"),
+        request=_request(tmp_path),
+        argv=["simplicio-dev-cli", "task"],
+        env={},
+        repo_path=tmp_path,
+        attempt_coordinator=None,
+        guarded_attempt=None,
+        source_hash=before["tree_hash"],
+    )
+
+    assert [call[0] for call in ledger.calls] == ["reserve", "mark_unresolved"]
+    assert "hookwall_reconciliation" not in outcome
+    assert outcome["hookwall_reason"] == "effect_not_committed"
+
+
+def test_operator_timeout_is_uncertain_and_is_not_reconciled(tmp_path, monkeypatch):
+    ledger = _RecordingHookwall()
+    monkeypatch.setattr(runner, "_hookwall_ledger", lambda *_args, **_kwargs: ledger)
+    monkeypatch.delenv("SIMPLICIO_LOOP_FAKE_OPERATOR_EXEC_JSON", raising=False)
+
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(["simplicio-dev-cli", "task"], 1)
+
+    monkeypatch.setattr(runner.subprocess, "run", timeout)
+    before = runner._repo_fingerprint(tmp_path)
+
+    outcome = runner._execute_operator_effect(
+        profile="standalone",
+        adapter=RuntimeEffectAdapter(profile="standalone"),
+        request=_request(tmp_path),
+        argv=["simplicio-dev-cli", "task"],
+        env={},
+        repo_path=tmp_path,
+        attempt_coordinator=None,
+        guarded_attempt=None,
+        source_hash=before["tree_hash"],
+    )
+
+    assert outcome["uncertain"] is True
+    assert [call[0] for call in ledger.calls] == ["reserve", "mark_unresolved"]
+    assert "hookwall_reconciliation" not in outcome
 
 
 def test_hookwall_pre_blocks_before_any_operator_effect(tmp_path, monkeypatch):

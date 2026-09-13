@@ -245,6 +245,63 @@ class MapperHookwallEffectLedger:
         )
         return {"state": "UNCERTAIN", "reason_code": reason_code}
 
+    def reconcile_failed(
+        self, key: str, receipt: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Resolve an unknown effect as failed using explicit no-mutation proof.
+
+        The caller must first have recorded ``UNCERTAIN`` through
+        :meth:`mark_unresolved`.  This method never infers failure from a
+        non-zero process exit; the supplied receipt is the deterministic proof
+        selected by the Loop runner.  Mapper still owns the authoritative
+        effect transition and fencing check.
+        """
+        envelope = self._envelope_for_key(key)
+        previous = self._state_event(envelope, key)
+        if previous is None:
+            raise HookwallBlocked("effect_not_persisted", "failed reconciliation requires an effect reservation")
+        payload = previous.get("payload") or {}
+        state = str(payload.get("state") or "")
+        if state == "FAILED":
+            return {
+                "state": state,
+                "receipt_hash": str(payload.get("receipt_hash") or ""),
+            }
+        if state != "UNCERTAIN":
+            raise HookwallBlocked(
+                "invalid_effect_transition",
+                f"failed reconciliation requires UNCERTAIN, got {state or 'unknown'}",
+            )
+        attempt_id, fence = self._identity(envelope)
+        receipt_payload = dict(receipt)
+        try:
+            self.operations.reconcile_effect(
+                effect_id=self._effect_id(key),
+                attempt_id=attempt_id,
+                outcome="failed",
+                receipt=receipt_payload,
+                fence_token=fence,
+            )
+        except (MapperOperationsError, QueueConflict) as error:
+            self._raise_mapper_error(error, "reconcile")
+        receipt_hash = _hash(receipt_payload)
+        event = self._append(
+            envelope,
+            "hookwall_effect_reconciled",
+            {
+                "idempotency_key": key,
+                "state": "FAILED",
+                "outcome": "failed",
+                "receipt_hash": receipt_hash,
+            },
+            f"hookwall:{key}:reconciled-failed",
+        )
+        return {
+            "state": "FAILED",
+            "receipt_hash": receipt_hash,
+            "event_hash": event["event"]["event_hash"],
+        }
+
     def _envelope_for_key(self, key: str) -> dict[str, Any]:
         for event in self.journal.events("hookwall-ledger"):
             payload = event.get("payload") or {}
