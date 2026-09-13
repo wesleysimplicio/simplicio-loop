@@ -668,6 +668,34 @@ def test_dispatch_operator_batch_rejects_duplicate_repo_run_task_items(tmp_path)
         runner_mod.dispatch_operator_batch([_fake_item(repo), _fake_item(repo)])
 
 
+def test_dispatch_operator_batch_propagates_provider_worker_to_attempt(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    seen = []
+
+    def fake_attempt(item):
+        seen.append(item.get("provider_worker"))
+        return {
+            "schema": "simplicio.operator-worker/v1",
+            "worker_id": item["worker_id"],
+            "repo": item["repo"],
+            "run_id": item["run_id"],
+            "task_index": item["task_index"],
+            "status": "succeeded",
+            "failure_fingerprint": "",
+            "receipt_status": "VERIFIED",
+        }
+
+    monkeypatch.setattr(runner_mod, "_operator_dispatch_attempt", fake_attempt)
+
+    result = runner_mod.dispatch_operator_batch(
+        [_fake_item(repo)], provider_worker="OpenRouter", retry_budget=0,
+    )
+
+    assert result["completed_task_indices"] == [1]
+    assert seen == ["openrouter"]
+
+
 def test_dispatch_operator_batch_retries_until_success_within_budget(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()

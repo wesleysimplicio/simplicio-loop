@@ -7430,6 +7430,7 @@ def dispatch_operator_batch(
     stop_requested: Optional[Callable[[], bool]] = None,
     owned_cancel: Optional[Callable[[str], Any]] = None,
     physical_monitor_kwargs: Optional[Mapping[str, Any]] = None,
+    provider_worker: str | None = None,
 ) -> Dict[str, Any]:
     """Continuously dispatch real operator workers and refill freed slots.
 
@@ -7442,6 +7443,10 @@ def dispatch_operator_batch(
     has no successful receipt.
     """
     normalized = [_operator_dispatch_item(item) for item in items]
+    if provider_worker is not None:
+        selected_provider_worker = str(provider_worker).strip().lower()
+        for item in normalized:
+            item["provider_worker"] = selected_provider_worker
     keys = {(item["repo"], item["run_id"], item["task_index"]) for item in normalized}
     if len(keys) != len(normalized):
         raise ValueError("operator dispatch contains duplicate repo/run/task items")
