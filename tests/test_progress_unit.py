@@ -38,6 +38,17 @@ def test_progress_reaches_100_only_for_complete_oracle():
     assert "100%" in render_markdown(event)
 
 
+def test_progress_reaches_100_for_verified_watcher_oracle():
+    event = build_progress(_state(
+        phase="done",
+        completion={"ready": True, "verdict": "VERIFIED"},
+        evidence={"ready": True, "status": "VERIFIED"},
+    ))
+    assert event["percent"] == 100
+    assert event["status"] == "COMPLETE"
+    assert event["gates"]["oracle"] is True
+
+
 def test_verified_terminal_progress_does_not_replay_historical_blockers():
     event = build_progress(_state(
         phase="done",

@@ -38,6 +38,13 @@ RULE_REF_RE = re.compile(r"\[(RN\d+)\]", re.I)
 IDENTITY_RE = re.compile(
     r"^\s*(Sistema|System|Funcionalidade|Feature|Tipo|Type)\s*:\s*(.+?)\s*$", re.I
 )
+TASK_ID_RE = re.compile(
+    r"^\s*(?P<id>[A-Za-z][A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)+)\b"
+)
+INLINE_DEPENDENCY_RE = re.compile(
+    r"^\s*(?:Depends on|Depende de|Depend[êe]ncia|Dependencia)\s*:\s*(?P<value>.+?)\s*$",
+    re.I,
+)
 STORY_RE = re.compile(r"^\s*(COMO|QUERO|PARA|AS|I WANT|SO THAT)\s+(.+?)\s*$", re.I)
 GIVEN_RE = re.compile(r"^\s*(?:Dado(?: que)?|Given)\s+(.+?)\s*$", re.I)
 WHEN_RE = re.compile(r"^\s*(?:Quando|When)\s+(.+?)\s*$", re.I)
@@ -180,7 +187,7 @@ def _collect_sections(lines: List[str]) -> Tuple[Dict[str, List[str]], List[str]
 
 
 def _parse_identity(lines: Iterable[str]) -> Dict[str, str]:
-    out = {"system": "", "feature": "", "type": "", "title": ""}
+    out = {"id": "", "system": "", "feature": "", "type": "", "title": ""}
     for line in lines:
         m = IDENTITY_RE.match(line)
         if not m:
@@ -195,7 +202,24 @@ def _parse_identity(lines: Iterable[str]) -> Dict[str, str]:
             out["type"] = value
     title_parts = [p for p in (out["feature"], out["type"]) if p]
     out["title"] = " — ".join(title_parts) if title_parts else out["feature"] or out["system"]
+    feature_match = TASK_ID_RE.match(out["feature"])
+    if feature_match:
+        out["id"] = feature_match.group("id")
     return out
+
+
+def _parse_inline_dependencies(lines: Iterable[str]) -> List[str]:
+    dependencies: List[str] = []
+    for line in lines:
+        match = INLINE_DEPENDENCY_RE.match(line)
+        if not match:
+            continue
+        dependencies.extend(
+            value.strip().lstrip("-* ")
+            for value in re.split(r"[,;]", match.group("value"))
+            if value.strip().lstrip("-* ")
+        )
+    return dependencies
 
 
 def _parse_story(lines: Iterable[str]) -> Dict[str, str]:
@@ -609,7 +633,7 @@ def compile_task(text: str, source_path: str = "") -> Dict[str, Any]:
         ["validar com o time", "validar com a equipe", "validate with the team", "unknown"],
     )
     dependencies = _parse_stateful_list(
-        sections["dependencies"],
+        sections["dependencies"] + _parse_inline_dependencies(preamble),
         ["validar com o time", "validar com a equipe", "unknown"],
     )
     prototypes = _parse_prototypes(sections["prototypes"])
@@ -620,6 +644,7 @@ def compile_task(text: str, source_path: str = "") -> Dict[str, Any]:
     routing = _parse_routing(sections["routing"])
     contract = {
         "schema": SCHEMA,
+        "id": identity.get("id", ""),
         # Preserve the exact provider-free source for typed downstream handoff.
         # The structured fields remain useful for Loop planning, but they are not
         # a substitute for the source that produced them.

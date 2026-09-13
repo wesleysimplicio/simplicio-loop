@@ -83,6 +83,87 @@ def test_repo_state_equivalent_ignores_dirty_status_noise_when_tree_is_stable():
     assert runner_mod._repo_state_equivalent(before, {**after, "head": "def456"}) is False
 
 
+def test_plan_relevant_changed_paths_ignores_loop_owned_storage(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        runner_mod,
+        "_changed_paths",
+        lambda _repo: [
+            ".simplicio/events.jsonl",
+            ".simplicio/loop-runs/run-1/state.json",
+            "site/checkers.html",
+            "requirements/checkers-tasks.md",
+        ],
+    )
+
+    assert runner_mod._plan_relevant_changed_paths(tmp_path) == [
+        "requirements/checkers-tasks.md",
+        "site/checkers.html",
+    ]
+
+
+def test_loop_generated_framework_artifacts_do_not_change_repo_fingerprint(tmp_path):
+    before = runner_mod._repo_fingerprint(tmp_path)
+    generated = [
+        tmp_path / ".agents" / "_generated" / "run-1" / "task.agent.md",
+        tmp_path / ".catalog" / "_generated" / "run-1" / "generation-receipt.json",
+        tmp_path / ".catalog" / "project-capabilities.json",
+        tmp_path / ".skills" / "_generated" / "run-1" / "task" / "SKILL.md",
+    ]
+    for path in generated:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("framework-owned\n", encoding="utf-8")
+
+    after = runner_mod._repo_fingerprint(tmp_path)
+
+    assert before["tree_hash"] == after["tree_hash"]
+    assert before["dirty_status_hash"] == after["dirty_status_hash"]
+
+
+def test_external_completion_response_is_persisted_after_gated_execution(tmp_path):
+    run_dir = tmp_path / "run"
+    loop_dir = run_dir / "loop"
+    loop_dir.mkdir(parents=True)
+    (loop_dir / "scratchpad.md").write_text(
+        'completion_promise: "run-123-verified"\n', encoding="utf-8"
+    )
+    (run_dir / "operator-receipt.json").write_text(json.dumps({
+        "provider_config": {"route": "openrouter-to-mechanical-edit"},
+    }), encoding="utf-8")
+
+    path = runner_mod._persist_external_completion_response(run_dir)
+
+    assert path.endswith("/loop/last_response.txt")
+    assert (loop_dir / "last_response.txt").read_text(encoding="utf-8") == (
+        "<promise>run-123-verified</promise>\n"
+        "Coordinator response persisted after independent watcher and quality gates: "
+        f"{loop_dir / 'watcher_state.json'}\n"
+    )
+
+
+def test_verified_external_run_materializes_append_only_loop_journal(tmp_path):
+    run_dir = tmp_path / "run"
+    (run_dir / "loop").mkdir(parents=True)
+
+    path = runner_mod._ensure_verified_loop_journal(run_dir)
+
+    assert path.endswith("/loop/journal.jsonl")
+    record = json.loads((run_dir / "loop" / "journal.jsonl").read_text(encoding="utf-8"))
+    assert record["gate"] == "pass"
+    assert record["execution_state"] == "verified"
+
+
+def test_verified_loop_journal_does_not_rewrite_existing_attempt_memory(tmp_path):
+    run_dir = tmp_path / "run"
+    loop_dir = run_dir / "loop"
+    loop_dir.mkdir(parents=True)
+    original = '{"iteration":1,"action":"attempt","hypothesis":"h","gate":"blocked","fingerprint":"abc123def456","note":"n","ts":"2026-01-01T00:00:00Z"}\n'
+    (loop_dir / "journal.jsonl").write_text(original, encoding="utf-8")
+
+    runner_mod._ensure_verified_loop_journal(run_dir)
+
+    assert (loop_dir / "journal.jsonl").read_text(encoding="utf-8") == original
+
+
 def test_operator_env_defaults_to_codex_gpt54_medium(monkeypatch):
     monkeypatch.delenv("SIMPLICIO_MODEL", raising=False)
     monkeypatch.delenv("SIMPLICIO_CODEX_EFFORT", raising=False)
@@ -766,6 +847,39 @@ def test_build_plan_uses_mapper_summary_hash_and_task_scoped_creation_targets(tm
     assert plan["steps"][1]["to_create"] == []
 
 
+def test_build_plan_recognizes_portuguese_creation_task_type(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tasks = [{
+        "identity": {"system": "Simplicio", "feature": "damas", "type": "criação"},
+        "original_text": "Target: site/checkers.html",
+        "scenarios": [{"id": "S1", "title": "creation", "verification_intent": "file exists"}],
+        "rules": [],
+    }]
+    state = runner_mod._repo_fingerprint(repo)
+    mapper_payload = {
+        "handoff": {
+            "stdout": {
+                "context_pack": {
+                    "summary": {"pack_hash": "pack-checkers"},
+                    "files": [{"path": "requirements/checkers-tasks.md"}],
+                }
+            }
+        },
+        "repo_state_before": state,
+        "repo_state_after": state,
+        "generated_at": "2026-09-12T00:00:00Z",
+    }
+
+    plan = runner_mod._build_plan_with_hints(
+        tasks, mapper_payload, repo, "Target: site/checkers.html",
+        contract_hash="checkers-contract",
+    )
+
+    assert plan["steps"][0]["candidate_targets"] == ["site/checkers.html"]
+    assert plan["steps"][0]["to_create"] == ["site/checkers.html"]
+
+
 def test_build_plan_uses_filtered_candidate_targets(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -1055,6 +1169,47 @@ def test_tick_executes_real_operator_boundary_and_binds_receipt(tmp_path, monkey
     assert receipt["task_contract_hash"]
     assert receipt["plan_hash"]
     assert receipt["target_within_repo"] is True
+    assert (run_dir / "operator-receipt-1.json").is_file()
+
+
+def test_direct_tick_reuses_run_authority_attempt_after_prior_task(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIMPLICIO_STORAGE_ROUTE", "mapper")
+    repo, _, armed_payload, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
+    run_id = armed_payload["manifest"]["run_id"]
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    state["attempts"] = 1
+    (run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+
+    captured = {}
+
+    class FakeLease:
+        attempt_id = "attempt-2"
+        lease_id = "lease-2"
+        fence_token = 2
+
+    class FakeOperations:
+        def complete(self, lease, *, status, receipt):
+            return {"status": status, "receipt": receipt}
+
+    monkeypatch.setattr(
+        runner_mod,
+        "_claim_mapper_operation_attempt",
+        lambda *args, **kwargs: (FakeOperations(), SimpleNamespace(lease=FakeLease())),
+    )
+
+    def fake_unleased(*args, **kwargs):
+        captured["authority_attempt"] = kwargs["authority_attempt"]
+        return {
+            "state": {
+                "operator": {"ready": True, "execution_state": "applied", "receipt": "operator.json"},
+                "evidence": {"receipt": "evidence.json"},
+            }
+        }
+
+    monkeypatch.setattr(runner_mod, "_execute_operator_unleased", fake_unleased)
+    runner_mod.execute_operator(str(repo), run_id, task_index=1)
+
+    assert captured["authority_attempt"] == 1
 
 
 def test_tick_rolls_back_failed_operator_when_change_stays_within_authorized_target(tmp_path, monkeypatch):

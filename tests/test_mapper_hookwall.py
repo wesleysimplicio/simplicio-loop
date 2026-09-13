@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from simplicio_loop.hookwall_gate import validate_envelope
 from simplicio_loop.mapper_hookwall import MapperHookwallEffectLedger
+from simplicio_loop.mapper_operations import MapperOperationsAdapter
 
 
 @dataclass
@@ -50,8 +51,24 @@ class FakeOperations:
         self.effects[effect_id.removeprefix("hookwall:")] = "unknown"
         return {"status": "unknown"}
 
+    def reconcile_effect(
+        self, *, effect_id, attempt_id, outcome, receipt, fence_token=None
+    ):
+        assert attempt_id == "attempt-1"
+        assert fence_token == "fence-1"
+        assert outcome == "failed"
+        assert receipt["outcome"] == "failed"
+        self.effects[effect_id.removeprefix("hookwall:")] = "failed"
+        return {"status": "failed", "state": "failed"}
 
-def _request(fake: FakeOperations):
+
+def _request(
+    fake,
+    *,
+    attempt_id: str = "attempt-1",
+    fence: str = "fence-1",
+    workspace: str = "/tmp",
+):
     envelope = validate_envelope(
         {
             "schema": "simplicio.dispatch-envelope/v1",
@@ -61,9 +78,9 @@ def _request(fake: FakeOperations):
             "source_hash": "source",
             "policy_hash": "policy",
             "idempotency_key": "effect-key",
-            "workspace": "/tmp",
-            "fence": "fence-1",
-            "attempt_id": "attempt-1",
+            "workspace": workspace,
+            "fence": fence,
+            "attempt_id": attempt_id,
             "effect_set": ["process", "write"],
             "write_set": ["repo:src"],
             "command": ["simplicio-dev-cli", "task"],
@@ -123,3 +140,60 @@ def test_mapper_hookwall_commits_only_after_post_receipt():
     assert fake.effects["effect-key"] == "committed"
     assert ledger.reserve(envelope, pre)["action"] == "REPLAY_VERIFIED"
     assert ledger.verify_audit_chain()["status"] == "VERIFIED"
+
+
+def test_mapper_hookwall_reconciles_only_an_already_unknown_effect_as_failed():
+    fake = FakeOperations()
+    envelope, pre, ledger = _request(fake)
+
+    assert ledger.reserve(envelope, pre)["action"] == "EXECUTE"
+    assert ledger.mark_unresolved("effect-key", "effect_not_committed")["state"] == "UNCERTAIN"
+
+    proof = {
+        "schema": "simplicio.loop.effect-reconciliation-proof/v1",
+        "outcome": "failed",
+        "before_tree_hash": "tree-before",
+        "after_tree_hash": "tree-before",
+    }
+    result = ledger.reconcile_failed("effect-key", proof)
+
+    assert result["state"] == "FAILED"
+    assert fake.effects["effect-key"] == "failed"
+    assert ledger.status("effect-key")["state"] == "FAILED"
+    # The journal-backed method is idempotent after the terminal failed state.
+    assert ledger.reconcile_failed("effect-key", proof)["state"] == "FAILED"
+
+
+def test_mapper_hookwall_failed_reconciliation_unblocks_real_mapper_completion(tmp_path):
+    database = tmp_path / "operations.sqlite"
+    operations = MapperOperationsAdapter(database, auto_create=True)
+    operations.initialize()
+    operations.register_slot("default", 1)
+    operations.enqueue("task-1", {"kind": "test"}, idempotency_key="task-1")
+    lease = operations.claim_next("worker-1")
+    assert lease is not None
+
+    envelope, pre, ledger = _request(
+        operations,
+        attempt_id=lease.attempt_id,
+        fence=lease.fence_token,
+        workspace=str(tmp_path),
+    )
+    assert ledger.reserve(envelope, pre)["action"] == "EXECUTE"
+    ledger.mark_unresolved("effect-key", "effect_not_committed")
+    ledger.reconcile_failed(
+        "effect-key",
+        {
+            "schema": "simplicio.loop.effect-reconciliation-proof/v1",
+            "outcome": "failed",
+            "before_tree_hash": "tree-before",
+            "after_tree_hash": "tree-before",
+        },
+    )
+
+    completion = operations.complete(
+        lease,
+        status="failed",
+        receipt={"status": "failed", "reason": "deterministic_no_mutation"},
+    )
+    assert completion["status"] == "failed"

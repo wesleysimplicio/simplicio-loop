@@ -28,6 +28,11 @@ from scripts.distributed_trust_policy import TrustPolicyError
 def _use_thread_dispatch_for_in_process_fakes(monkeypatch):
     """Keep this state-machine harness independent of the host's physical pressure."""
     monkeypatch.setenv("SIMPLICIO_LOOP_DISPATCH_MODE", "thread")
+    # These tests use synthetic RunJournal fixtures and do not initialize a
+    # repository-scoped MapperStore.  Keep the harness independent of a
+    # caller's benchmark-only mapper rollout setting; mapper-backed behavior
+    # is covered by the dedicated integration tests.
+    monkeypatch.delenv("SIMPLICIO_STORAGE_ROUTE", raising=False)
 
     def healthy_probe(_root, *, requested_workers, now_ns=None, **_kwargs):
         requested = max(1, int(requested_workers))
@@ -661,6 +666,34 @@ def test_dispatch_operator_batch_rejects_duplicate_repo_run_task_items(tmp_path)
     repo.mkdir()
     with pytest.raises(ValueError, match="duplicate repo/run/task items"):
         runner_mod.dispatch_operator_batch([_fake_item(repo), _fake_item(repo)])
+
+
+def test_dispatch_operator_batch_propagates_provider_worker_to_attempt(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    seen = []
+
+    def fake_attempt(item):
+        seen.append(item.get("provider_worker"))
+        return {
+            "schema": "simplicio.operator-worker/v1",
+            "worker_id": item["worker_id"],
+            "repo": item["repo"],
+            "run_id": item["run_id"],
+            "task_index": item["task_index"],
+            "status": "succeeded",
+            "failure_fingerprint": "",
+            "receipt_status": "VERIFIED",
+        }
+
+    monkeypatch.setattr(runner_mod, "_operator_dispatch_attempt", fake_attempt)
+
+    result = runner_mod.dispatch_operator_batch(
+        [_fake_item(repo)], provider_worker="OpenRouter", retry_budget=0,
+    )
+
+    assert result["completed_task_indices"] == [1]
+    assert seen == ["openrouter"]
 
 
 def test_dispatch_operator_batch_retries_until_success_within_budget(tmp_path, monkeypatch):

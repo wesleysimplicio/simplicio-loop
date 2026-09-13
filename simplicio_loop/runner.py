@@ -103,6 +103,12 @@ from .stack_lock import (
 from .execution_route import _stable_hash as _execution_route_hash
 from .execution_route import capability_fingerprint, normalize_capability_manifest, route_receipt_is_current
 from .execution_route import decide_route, verify_route_hash
+from .openrouter_operator import (
+    OpenRouterPlanError,
+    enabled as _openrouter_operator_enabled,
+    external_preflight_admissible as _external_preflight_admissible,
+    request_mechanical_plan as _request_openrouter_plan,
+)
 try:
     from scripts.agent_identity import ensure_identity
 except ImportError:  # pragma: no cover - installed package without scripts namespace
@@ -129,6 +135,15 @@ except ImportError:  # pragma: no cover - installed package without scripts name
 RUNNER_SCHEMA = "simplicio.run-manifest/v1"
 STATE_SCHEMA = "simplicio.run-state/v1"
 OPERATOR_RECEIPT_SCHEMA = "simplicio.operator-receipt/v0"
+MAX_OPENROUTER_PROPOSAL_ATTEMPTS = 3
+OPENROUTER_NOOP_REPAIR_FEEDBACK = (
+    "The previous proposal was rejected because it was byte-identical to the current target. "
+    "Return a complete replacement file that is observably different while preserving every "
+    "existing behavior and all requested controls. Make one small, concrete, meaningful edit "
+    "directly related to this task; for an HTML target, an accessible attribute on the existing "
+    "live status or edited control is appropriate. Do not merely describe the change; include "
+    "the full changed file in the JSON."
+)
 # Real content/schema/hash/freshness/provenance validation, gating `receipt_status` in
 # `_operator_dispatch_attempt()` below (issue #288: presence of a file must not imply
 # VERIFIED).
@@ -985,6 +1000,67 @@ def _parse_effect_stdout(value: Any) -> Dict[str, Any]:
         return dict(parsed) if isinstance(parsed, dict) else {"raw": redact_sensitive_text(value)}
     return {}
 
+
+def _deterministic_no_mutation_proof(
+    outcome: Mapping[str, Any], *, source_hash: str, repo_path: Path,
+) -> Dict[str, Any] | None:
+    """Prove a failed operator stopped before mutation, conservatively.
+
+    A non-zero exit code alone is not proof: a process may have written files
+    before failing.  Reconciliation is allowed only for the Dev CLI's explicit
+    blocked result, with ``applied=false``, no reported files/errors, and an
+    unchanged source-tree fingerprint.  Timeouts, runtime uncertainty, and
+    ambiguous output remain ``unknown``.
+    """
+    if outcome.get("uncertain"):
+        return None
+    returncode = outcome.get("returncode")
+    if isinstance(returncode, bool) or not isinstance(returncode, int) or returncode == 0:
+        return None
+    stdout = outcome.get("stdout")
+    if not isinstance(stdout, Mapping):
+        return None
+    if stdout.get("status") != "blocked" or stdout.get("applied") is not False:
+        return None
+    blocked = stdout.get("blocked_preconditions")
+    if not isinstance(blocked, list) or not blocked:
+        return None
+    codes: List[str] = []
+    for item in blocked:
+        if not isinstance(item, Mapping):
+            return None
+        code = str(item.get("code") or item.get("reason") or "").strip()
+        if not code:
+            return None
+        codes.append(code)
+    files = stdout.get("files")
+    if files not in (None, []):
+        return None
+    errors = stdout.get("errors")
+    if errors not in (None, []):
+        return None
+
+    after = _repo_fingerprint(repo_path)
+    if not source_hash or after.get("tree_hash") != source_hash:
+        return None
+    proof: Dict[str, Any] = {
+        "schema": "simplicio.loop.effect-reconciliation-proof/v1",
+        "outcome": "failed",
+        "reason_code": "deterministic_no_mutation",
+        "returncode": returncode,
+        "operator_source": str(outcome.get("source") or ""),
+        "blocked_codes": sorted(set(codes)),
+        "applied": False,
+        "files_changed": [],
+        "errors": [],
+        "before_tree_hash": source_hash,
+        "after_tree_hash": str(after.get("tree_hash") or ""),
+        "fingerprint_scope": "source_tree_excluding_loop_owned_artifacts",
+        "measured_at": _now(),
+    }
+    proof["proof_hash"] = _hookwall_digest(proof)
+    return proof
+
 def _owned_registry_path(registry: Any, task_id: str) -> Path | None:
     if isinstance(registry, (str, Path)) and task_id:
         digest = hashlib.sha256(str(task_id).encode("utf-8")).hexdigest()[:32]
@@ -1227,7 +1303,10 @@ def _execute_operator_effect_unchecked(*, profile: str, adapter: RuntimeEffectAd
             "stderr": f"timed out after {exc.timeout}s",
             "source": "live_cli",
             "effect_receipt": None,
-            "uncertain": False,
+            # A timeout does not prove that the child stopped before writing.
+            # Keep the Mapper effect unknown until an explicit reconciliation
+            # can establish what happened.
+            "uncertain": True,
         }
 
 
@@ -1724,14 +1803,39 @@ def _execute_operator_effect(*, profile: str, adapter: RuntimeEffectAdapter,
     outcome["hookwall_envelope"] = envelope
     outcome["hookwall_pre_decision"] = pre_decision
     if outcome.get("returncode") != 0 or outcome.get("uncertain"):
-        hookwall_ledger.mark_unresolved(
-            request.idempotency_key,
-            "effect_uncertain" if outcome.get("uncertain") else "effect_not_committed",
-        )
+        unresolved_reason = "effect_uncertain" if outcome.get("uncertain") else "effect_not_committed"
+        hookwall_ledger.mark_unresolved(request.idempotency_key, unresolved_reason)
+        if not outcome.get("uncertain"):
+            proof = _deterministic_no_mutation_proof(
+                outcome,
+                source_hash=source_hash,
+                repo_path=repo_path,
+            )
+            reconcile_failed = getattr(hookwall_ledger, "reconcile_failed", None)
+            if proof is not None and callable(reconcile_failed):
+                try:
+                    reconciliation = reconcile_failed(request.idempotency_key, proof)
+                except Exception as exc:
+                    # Keep the effect unknown if Mapper cannot persist the
+                    # explicit transition.  Completion will therefore remain
+                    # fail-closed instead of claiming a failed lease safely.
+                    outcome["hookwall_reconciliation_error"] = (
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                else:
+                    outcome["hookwall_reconciliation"] = {
+                        "proof": proof,
+                        "mapper": reconciliation,
+                    }
+                    outcome["hookwall_evidence"] = None
+                    outcome["hookwall_reason"] = "effect_failed_no_mutation"
+                    return outcome
+            elif proof is not None:
+                outcome["hookwall_reconciliation_error"] = (
+                    "Hookwall ledger does not expose explicit failed-effect reconciliation"
+                )
         outcome["hookwall_evidence"] = None
-        outcome["hookwall_reason"] = (
-            "effect_uncertain" if outcome.get("uncertain") else "effect_not_committed"
-        )
+        outcome["hookwall_reason"] = unresolved_reason
         return outcome
 
     hookwall_ledger.effect_confirmed(
@@ -1795,6 +1899,41 @@ def _execute_operator_effect(*, profile: str, adapter: RuntimeEffectAdapter,
 
 
 
+_LOOP_GENERATED_PATH_PREFIXES = (
+    ".agents/_generated/",
+    ".catalog/_generated/",
+    ".skills/_generated/",
+)
+_LOOP_GENERATED_PATHS = {".catalog/project-capabilities.json"}
+
+
+def _normalized_repo_path(path: str) -> str:
+    """Normalize a Git path without stripping its meaningful leading dot."""
+    normalized = str(path).replace("\\", "/").strip()
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized.lstrip("/").lower()
+
+
+def _is_loop_generated_path(path: str) -> bool:
+    normalized = _normalized_repo_path(path)
+    return normalized in _LOOP_GENERATED_PATHS or any(
+        normalized.startswith(prefix) for prefix in _LOOP_GENERATED_PATH_PREFIXES
+    )
+
+
+def _is_loop_owned_status_path(path: str) -> bool:
+    normalized = _normalized_repo_path(path)
+    return (
+        normalized.startswith(".simplicio/orchestrator/")
+        or normalized.startswith(".simplicio/")
+        or normalized == ".simplicio-fast"
+        or normalized.startswith(".simplicio-fast/")
+        or normalized.startswith(".claude/")
+        or _is_loop_generated_path(normalized)
+    )
+
+
 def _repo_fingerprint(repo_path: Path) -> Dict[str, str]:
     """Return a deterministic content fingerprint for mapper freshness gates.
 
@@ -1806,13 +1945,22 @@ def _repo_fingerprint(repo_path: Path) -> Dict[str, str]:
     digest = hashlib.sha256()
     files = []
     for root, dirs, names in os.walk(repo_path):
-        dirs[:] = [d for d in dirs if d not in {
-            ".git", ".simplicio/orchestrator", ".simplicio", ".simplicio-fast", "__pycache__"
-        }]
+        relative_root = Path(root).relative_to(repo_path).as_posix()
+        if relative_root == ".":
+            relative_root = ""
+        dirs[:] = [
+            d for d in dirs
+            if d not in {".git", ".simplicio/orchestrator", ".simplicio", ".simplicio-fast", "__pycache__"}
+            and not _is_loop_generated_path(
+                f"{relative_root}/{d}" if relative_root else d
+            )
+        ]
         for name in names:
             path = Path(root) / name
             try:
                 rel = path.relative_to(repo_path).as_posix()
+                if _is_loop_generated_path(rel):
+                    continue
                 data = path.read_bytes()
             except (OSError, ValueError):
                 continue
@@ -1835,15 +1983,8 @@ def _repo_fingerprint(repo_path: Path) -> Dict[str, str]:
                     continue
                 path_text = line[3:].strip()
                 parts = [part.strip() for part in path_text.split("->")] if "->" in path_text else [path_text]
-                normalized = [part.replace("\\", "/").lstrip("./").lower() for part in parts if part.strip()]
-                if normalized and all(
-                    item.startswith(".simplicio/orchestrator/")
-                    or item.startswith(".simplicio/")
-                    or item == ".simplicio-fast"
-                    or item.startswith(".simplicio-fast/")
-                    or item.startswith(".claude/")
-                    for item in normalized
-                ):
+                normalized = [_normalized_repo_path(part) for part in parts if part.strip()]
+                if normalized and all(_is_loop_owned_status_path(item) for item in normalized):
                     continue
                 filtered.append(line)
             status = "\n".join(filtered).strip()
@@ -2661,6 +2802,85 @@ def _write_watcher_challenge(loop_dir: Path, goal_fp: str) -> None:
     _write_json(loop_dir / "watcher_challenge.json", payload)
 
 
+def _persist_external_completion_response(run_dir: Path) -> str:
+    """Record the system response required by the Completion Oracle.
+
+    An external coordinator returns a provider plan, not an interactive agent
+    message, so the normal response-capture hook has no text to persist. Once
+    the independent watcher and quality matrix have passed, record a
+    coordinator-owned response containing the exact promise from the run's
+    scratchpad. This is a transport adaptation after all evidence gates, not a
+    completion claim before them.
+    """
+    operator = _load_json(run_dir / "operator-receipt.json")
+    provider_config = operator.get("provider_config") if isinstance(operator, Mapping) else {}
+    if not isinstance(provider_config, Mapping) or provider_config.get("route") != "openrouter-to-mechanical-edit":
+        return ""
+    scratchpad = run_dir / "loop" / "scratchpad.md"
+    try:
+        text = scratchpad.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    promise = ""
+    for line in text.splitlines():
+        if line.strip().startswith("completion_promise:"):
+            promise = line.split(":", 1)[1].strip().strip('"')
+            break
+    if not promise:
+        return ""
+    response = (
+        "<promise>%s</promise>\n"
+        "Coordinator response persisted after independent watcher and quality gates: %s\n"
+        % (promise, str(run_dir / "loop" / "watcher_state.json"))
+    )
+    path = run_dir / "loop" / "last_response.txt"
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(response, encoding="utf-8")
+    temporary.replace(path)
+    return str(path)
+
+
+def _ensure_verified_loop_journal(run_dir: Path) -> str:
+    """Persist the append-only loop journal required by the published receipt.
+
+    Mapper-backed runs keep their durable lifecycle journal in MapperStore, while
+    the runtime handoff contract still carries the loop's JSONL attempt-memory
+    artifact. The normal agent hook is not involved in an external mechanical
+    coordinator run, so materialize one honest, post-gate verification record at
+    the boundary. An existing journal is preserved byte-for-byte; a missing or
+    empty journal is only completed after the independent watcher, quality matrix,
+    and Completion Oracle have passed.
+    """
+    path = run_dir / "loop" / "journal.jsonl"
+    if path.is_symlink():
+        raise LoopExecutionReceiptError("loop journal must not be a symlink")
+    try:
+        if path.exists() and not path.is_file():
+            raise LoopExecutionReceiptError("loop journal must be a regular file")
+        if path.is_file() and path.stat().st_size > 0:
+            return str(path)
+        _append_jsonl(
+            path,
+            {
+                "iteration": 1,
+                "action": "verified-run",
+                "hypothesis": "independent execution evidence satisfies the frozen task contract",
+                "gate": "pass",
+                "fingerprint": "",
+                "note": "watcher, quality matrix, and completion oracle passed",
+                "ts": _now(),
+                "execution_state": "verified",
+                "source_artifact": str(run_dir / "quality-matrix.json"),
+                "validator": "simplicio-loop.verify",
+            },
+        )
+    except LoopExecutionReceiptError:
+        raise
+    except OSError as exc:
+        raise LoopExecutionReceiptError(f"loop journal publication failed: {exc}") from exc
+    return str(path)
+
+
 def _transition(run_dir: Path, state: Dict[str, Any], to_phase: str, reason: str,
                 receipt: str = "", extra: Dict[str, Any] | None = None) -> Dict[str, Any]:
     if to_phase not in PHASES:
@@ -3407,8 +3627,11 @@ def _validate_run_receipts(
     operator_state = operator.get("repo_state_before") or {}
     if not operator_state.get("tree_hash") or not _repo_state_equivalent(operator_state, current_state):
         raise RuntimeError("stale operator receipt: repository changed")
-    if require_dry_run and (operator.get("execution_state") != "dry_run" or operator.get("returncode") != 0):
-        raise RuntimeError("operator receipt is not a fresh successful dry-run preflight")
+    if require_dry_run:
+        dry_run_ok = operator.get("execution_state") == "dry_run" and operator.get("returncode") == 0
+        external_ok = bool(operator.get("preflight_admitted")) and _external_preflight_admissible(operator)
+        if not dry_run_ok and not external_ok:
+            raise RuntimeError("operator receipt is not a fresh successful dry-run preflight")
     if not operator.get("target_within_repo") or not operator.get("authorized_targets"):
         raise RuntimeError("operator receipt has no authorized target")
     target = str(operator.get("target") or "")
@@ -3837,6 +4060,17 @@ def _extract_declared_task_target(task_text: str, repo_path: Path) -> List[str]:
     return _extract_repo_file_hints(match.group(1), repo_path)
 
 
+def _is_creation_task_type(value: Any) -> bool:
+    """Recognize the task-type spellings accepted by the Markdown contract."""
+    return str(value or "").strip().casefold() in {
+        "creation",
+        "create",
+        "new",
+        "criação",
+        "criacao",
+    }
+
+
 def _task_mapper_context(mapper_payload: Mapping[str, Any], task_index: int) -> Dict[str, Any]:
     """Return one task's Mapper envelope, with a single-task compatibility adapter."""
     contexts = mapper_payload.get("task_contexts") or []
@@ -3996,8 +4230,7 @@ def _build_plan_with_hints(tasks: List[Dict[str, Any]], mapper_payload: Dict[str
                 path for path in data["targets"]
                 if path in declared_targets
                 and not (repo_path / path).exists()
-                and str((task.get("identity") or {}).get("type") or "").strip().lower()
-                in {"creation", "create", "new"}
+                and _is_creation_task_type((task.get("identity") or {}).get("type"))
             ],
             "rule_ids": rule_ids,
             "steps": task_steps,
@@ -4175,6 +4408,10 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
     argv.extend(context_args)
     try:
         op_env = _devcli_env(repo_path, _operator_env())
+        # Dev CLI is deterministic-only.  Any configured OpenRouter credential
+        # belongs exclusively to the Loop coordinator and must not cross the
+        # subprocess boundary during read-only preflight.
+        op_env.pop("OPENROUTER_API_KEY", None)
         if not op_env.get("SIMPLICIO_RUNTIME_URL", "").strip():
             op_env.setdefault("SIMPLICIO_RUNTIME_OFFLINE", "1")
         preflight_test_command = op_env.get("SIMPLICIO_TEST_CMD", "").strip()
@@ -4279,6 +4516,10 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
     run_root = repo_path / ".simplicio" / "loop-runs" / run_id
     loop_dir = run_root / "loop"
     loop_dir.mkdir(parents=True, exist_ok=True)
+    # Keep the append-only loop attempt-memory artifact present even when the
+    # run uses the MapperStore-backed lifecycle journal. A later verified run
+    # appends its measured gate result without replacing prior records.
+    (loop_dir / "journal.jsonl").touch(exist_ok=True)
 
     promise = f"run-{run_id}-verified"
     manifest = {
@@ -4483,7 +4724,21 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
         receipt["authorized_targets"] = [candidates[0]]
         receipt["target_within_repo"] = True
         _write_json(run_root / "operator-receipt.json", receipt)
-        if receipt.get("execution_state") != "dry_run" or receipt.get("returncode") != 0:
+        preflight_ok = receipt.get("execution_state") == "dry_run" and receipt.get("returncode") == 0
+        external_preflight = _external_preflight_admissible(receipt)
+        if external_preflight:
+            # Dev CLI's deterministic-only policy is an expected, explicit block
+            # during read-only preflight.  The configured external coordinator
+            # supplies the mechanical plan at the mutation boundary; preserve the
+            # raw non-zero result and record why this preflight is admissible.
+            receipt["external_coordinator"] = {
+                "provider": "openrouter",
+                "route": "openrouter-to-mechanical-edit",
+                "preflight_status": "admitted_with_explicit_dev_cli_llm_block",
+                "raw_reason_code": "llm_execution_disabled",
+            }
+            receipt["preflight_admitted"] = True
+        if not preflight_ok and not external_preflight:
             stdout_payload = receipt.get("stdout") if isinstance(receipt.get("stdout"), Mapping) else {}
             blocked = stdout_payload.get("blocked_preconditions") if isinstance(stdout_payload, Mapping) else []
             reason = ""
@@ -4592,6 +4847,26 @@ def _changed_paths(repo_path: Path) -> List[str]:
         return sorted(set(paths))
     except Exception:
         return []
+
+
+def _plan_relevant_changed_paths(repo_path: Path) -> List[str]:
+    """Return worktree changes relevant to a frozen execution plan.
+
+    The Loop writes its own Mapper, ledger, cache, and run receipts under
+    ``.simplicio/`` while a shared-run batch advances from one dependent task to
+    the next. Those bookkeeping writes necessarily change the repository
+    fingerprint, but they are not source drift and cannot be authorized by a
+    task's candidate targets. Keep the strict stale-plan check for every
+    production path while excluding only Loop-owned storage from that check.
+    """
+    return sorted({
+        str(path).replace("\\", "/")
+        for path in _changed_paths(repo_path)
+        if str(path).replace("\\", "/") not in {".simplicio"}
+        and not str(path).replace("\\", "/").startswith(".simplicio/")
+        and not _is_loop_generated_path(str(path))
+        and str(path).strip()
+    })
 
 
 def _capture_operator_checkpoint(run_dir: Path, repo_path: Path, targets: List[str]) -> Dict[str, Any]:
@@ -4740,7 +5015,7 @@ def conclude_run(repo: str, run_id: str, *, force: bool = False) -> Dict[str, An
     return read_status(repo, run_id)
 
 
-def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
+def _execute_operator_unleased(repo: str, run_id: str, task_index: int = 1, *,
                       attempt_coordinator: Optional[AttemptCoordinator] = None,
                       guarded_attempt: Any = None,
                       authority_receipt: Optional[Mapping[str, Any]] = None,
@@ -4824,11 +5099,7 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
             if str(path).strip()
         }
         try:
-            changed_since_plan = {
-                str(path).replace("\\", "/")
-                for path in _changed_paths(repo_path)
-                if str(path).strip()
-            }
+            changed_since_plan = set(_plan_relevant_changed_paths(repo_path))
         except Exception:
             changed_since_plan = set()
         if changed_since_plan and changed_since_plan <= authorized_run_paths:
@@ -4847,11 +5118,7 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
             for path in (step.get("candidate_targets") or [])
             if str(path).strip()
         }
-        changed_since_plan = {
-            str(path).replace("\\", "/")
-            for path in _changed_paths(repo_path)
-            if str(path).strip()
-        }
+        changed_since_plan = set(_plan_relevant_changed_paths(repo_path))
         if not changed_since_plan or not changed_since_plan <= authorized_run_paths:
             raise RuntimeError("repository changed after planning; re-run mapper before execution")
     task = tasks[task_index - 1]
@@ -5025,25 +5292,103 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         if operator_mode == "standalone"
         else ["--task-spec", str(task_spec_path)]
     )
-    provider_plan, provider_receipt = _provider_worker_plan(
-        task=task,
-        context={
-            "mapper_context": _load_json(mapper_path),
-            "handoff": context_handoff,
-            "plan": plan,
-            "task_spec": task_spec,
-        },
-        run_id=run_id,
-        task_index=task_index,
-        attempt=attempt,
-        root=repo_path,
-        allowed_paths=targets,
-        run_dir=run_dir,
-        provider_worker=provider_worker,
-    )
-    mechanical_plan = provider_plan or _mechanical_fixture_plan(task, repo_path)
+    mechanical_path: Optional[Path] = None
+    provider_path: Optional[Path] = None
+    provider_receipt: Optional[Dict[str, Any]] = None
+    provider_receipt_paths: List[str] = []
+    provider_proposal_attempts = 0
+    selected_provider_worker = str(
+        provider_worker or os.environ.get("SIMPLICIO_PROVIDER_WORKER") or ""
+    ).strip().lower()
+    if selected_provider_worker:
+        # The explicit provider-worker surface introduced by main remains the
+        # authoritative route when selected.  The coordinator below is the
+        # automatic route for a complete OpenRouter environment and retains its
+        # deterministic no-op repair retry.
+        provider_plan, provider_receipt = _provider_worker_plan(
+            task=task,
+            context={
+                "mapper_context": _load_json(mapper_path),
+                "handoff": context_handoff,
+                "plan": plan,
+                "task_spec": task_spec,
+            },
+            run_id=run_id,
+            task_index=task_index,
+            attempt=attempt,
+            root=repo_path,
+            allowed_paths=targets,
+            run_dir=run_dir,
+            provider_worker=selected_provider_worker,
+        )
+        provider_path = (
+            Path(str(provider_receipt.get("receipt_path")))
+            if provider_receipt and provider_receipt.get("receipt_path")
+            else None
+        )
+        provider_receipt_paths = [str(provider_path)] if provider_path else []
+        provider_proposal_attempts = 1 if provider_receipt else 0
+        mechanical_plan = provider_plan or _mechanical_fixture_plan(task, repo_path)
+    elif _openrouter_operator_enabled():
+        mapper_context = _load_json(mapper_path)
+        repair_feedback = ""
+        last_provider_error: OpenRouterPlanError | None = None
+        for proposal_attempt in range(1, MAX_OPENROUTER_PROPOSAL_ATTEMPTS + 1):
+            provider_proposal_attempts = proposal_attempt
+            suffix = "" if proposal_attempt == 1 else f"-retry-{proposal_attempt - 1}"
+            provider_path = run_dir / f"openrouter-provider-{task_index}-attempt-{attempt}{suffix}.json"
+            provider_receipt_paths.append(str(provider_path))
+            try:
+                mechanical_plan, provider_receipt = _request_openrouter_plan(
+                    task=task,
+                    target=target,
+                    repo_path=repo_path,
+                    mapper_context=mapper_context,
+                    run_id=run_id,
+                    task_index=task_index,
+                    attempt=attempt,
+                    repair_feedback=repair_feedback,
+                )
+            except OpenRouterPlanError as exc:
+                last_provider_error = exc
+                failed_receipt = dict(exc.receipt)
+                failed_receipt["coordinator_proposal_attempt"] = proposal_attempt
+                _write_json(provider_path, failed_receipt)
+                if (
+                    proposal_attempt < MAX_OPENROUTER_PROPOSAL_ATTEMPTS
+                    and failed_receipt.get("status") == "proposal_rejected"
+                    and failed_receipt.get("error_detail") == "editing plan must change target content"
+                ):
+                    repair_feedback = OPENROUTER_NOOP_REPAIR_FEEDBACK
+                    continue
+                raise RuntimeError(
+                    "OpenRouter coordinator blocked before mutation: "
+                    + str(failed_receipt.get("error_detail")
+                          or failed_receipt.get("error_code")
+                          or failed_receipt.get("status")
+                          or "unknown")
+                ) from exc
+            provider_receipt = dict(provider_receipt or {})
+            provider_receipt["coordinator_proposal_attempt"] = proposal_attempt
+            provider_receipt["receipt_path"] = str(provider_path)
+            _write_json(provider_path, provider_receipt)
+            last_provider_error = None
+            break
+        if last_provider_error is not None:
+            raise RuntimeError(
+                "OpenRouter coordinator blocked before mutation: "
+                + str(last_provider_error.receipt.get("error_detail")
+                      or last_provider_error.receipt.get("error_code")
+                      or last_provider_error.receipt.get("status")
+                      or "unknown")
+            ) from last_provider_error
+        mechanical_path = run_dir / f"openrouter-mechanical-plan-{task_index}-attempt-{attempt}.json"
+        _write_json(mechanical_path, mechanical_plan)
+    else:
+        mechanical_plan = _mechanical_fixture_plan(task, repo_path)
     if mechanical_plan is not None:
-        mechanical_path = run_dir / f"mechanical-plan-{task_index}.json"
+        if mechanical_path is None:
+            mechanical_path = run_dir / f"mechanical-plan-{task_index}.json"
         _write_json(mechanical_path, mechanical_plan)
         argv = _devcli_cmd(
             repo_path, "mechanical-edit", "--root", str(repo_path),
@@ -5075,6 +5420,9 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
                     receipt=str(item_context.get("lock_receipt") or operator_path),
                     message="isolated worktree context available", worktree=item_context)
     op_env = _devcli_env(repo_path, _operator_env())
+    # The external coordinator consumes the credential in this Loop process;
+    # deterministic Dev CLI must never inherit or persist it.
+    op_env.pop("OPENROUTER_API_KEY", None)
     op_env["SIMPLICIO_ADMISSION_FENCE"] = str(max(1, int(admission_fence)))
     if authority_path is not None:
         op_env["SIMPLICIO_MUTATION_AUTHORITY_RECEIPT"] = str(authority_path)
@@ -5082,7 +5430,14 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         op_env.setdefault("SIMPLICIO_RUNTIME_OFFLINE", "1")
     provider_config = {
         "model": op_env.get("SIMPLICIO_MODEL", ""),
+        "planner": op_env.get("SIMPLICIO_PLANNER", ""),
         "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
+        "route": "openrouter-to-mechanical-edit" if provider_receipt else "dev-cli-task",
+        "provider_receipt": str(provider_path) if provider_path else "",
+        "provider_receipts": provider_receipt_paths,
+        "provider_proposal_attempts": provider_proposal_attempts,
+        "mechanical_plan": str(mechanical_path) if mechanical_path else "",
+        "provider_usage": dict((provider_receipt or {}).get("usage") or {}),
     }
     effect_adapter = _runtime_effect_adapter(repo_path, profile)
     effect_request = _build_effect_request(
@@ -5114,7 +5469,14 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
     effect_receipt = effect_outcome.get("effect_receipt")
     uncertain = bool(effect_outcome.get("uncertain"))
     hookwall_evidence = effect_outcome.get("hookwall_evidence")
-    hookwall_verified, hookwall_reason = gate_completion(hookwall_evidence)
+    hookwall_verified, hookwall_gate_reason = gate_completion(hookwall_evidence)
+    # A deterministically rejected operator has no successful Hookwall evidence,
+    # but it may have an explicit Mapper ``failed`` reconciliation.  Preserve
+    # that more precise reason in the durable operator receipt instead of
+    # collapsing every non-success into ``hookwall_evidence_missing``.
+    hookwall_reason = str(
+        effect_outcome.get("hookwall_reason") or hookwall_gate_reason
+    )
     after = _repo_fingerprint(repo_path)
     changed = _changed_paths(repo_path)
     rollback = {"attempted": False, "restored": False, "reason": "not_needed"}
@@ -5165,6 +5527,8 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         "source": source,
         "context_handoff": context_handoff,
         "provider_config": provider_config,
+        "provider_receipt": str(provider_path) if provider_path else "",
+        "mechanical_plan": str(mechanical_path) if mechanical_path else "",
         "provider_worker": provider_receipt.get("provider") if provider_receipt else None,
         "provider_model": provider_receipt.get("model") if provider_receipt else None,
         "provider_worker_receipt": str(provider_receipt.get("receipt_path") or "") if provider_receipt else "",
@@ -5186,6 +5550,8 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         "hookwall_evidence": hookwall_evidence,
         "hookwall_verified": hookwall_verified,
         "hookwall_reason": hookwall_reason,
+        "hookwall_reconciliation": effect_outcome.get("hookwall_reconciliation"),
+        "hookwall_reconciliation_error": effect_outcome.get("hookwall_reconciliation_error", ""),
         "checkpoint": checkpoint,
         "rollback": rollback,
         "failure_fingerprint": "" if returncode == 0 else _operator_failure_fingerprint(returncode, stderr, stdout),
@@ -5202,6 +5568,11 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
     }
     receipt["receipt_hash"] = _operator_receipt_hash(receipt)
     _write_json(operator_path, receipt)
+    # A run may execute multiple ordered tasks through the direct ``tick`` API.
+    # The historical run-level path is intentionally preserved for compatibility,
+    # but each task also needs an immutable receipt of its own so a later task
+    # cannot overwrite the evidence used to validate the earlier one.
+    _write_json(run_dir / f"operator-receipt-{task_index}.json", receipt)
     state = status["state"]
     if rollback.get("restored"):
         _emit_event(run_dir, state, "rollback", receipt=str(operator_path),
@@ -5241,6 +5612,144 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
             "evidence_receipt": str(run_dir / "evidence-receipt.json"),
         })
     return read_status(repo, run_id)
+
+
+def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
+                     attempt_coordinator: Optional[AttemptCoordinator] = None,
+                     guarded_attempt: Any = None,
+                     authority_receipt: Optional[Mapping[str, Any]] = None,
+                     authority_attempt: Optional[int] = None,
+                     admission_fence: int = 1,
+                     owned_process_registry: Any = None,
+                     owned_task_id: str = "",
+                     provider_worker: str | None = None) -> Dict[str, Any]:
+    """Execute one task, acquiring a Mapper OperationsStore lease for direct ticks.
+
+    Batch workers already claim a Mapper lease in ``_operator_dispatch_attempt`` and pass
+    it as ``guarded_attempt``.  The public ``tick`` command calls this boundary directly,
+    so it must acquire the same lease itself when the Mapper route is selected; otherwise
+    the Mapper-backed Hookwall correctly rejects the synthetic ``loop-run:<id>`` identity
+    with ``STALE_FENCE``.
+    """
+    if guarded_attempt is not None:
+        return _execute_operator_unleased(
+            repo, run_id, task_index=task_index,
+            attempt_coordinator=attempt_coordinator,
+            guarded_attempt=guarded_attempt,
+            authority_receipt=authority_receipt,
+            authority_attempt=authority_attempt,
+            admission_fence=admission_fence,
+            owned_process_registry=owned_process_registry,
+            owned_task_id=owned_task_id,
+            provider_worker=provider_worker,
+        )
+
+    status = read_status(repo, run_id)
+    run_dir = Path(status["run_dir"])
+    storage_route = _verify_storage_route(run_dir)
+    if storage_route.get("selected") != StorageRoute.MAPPER.value:
+        return _execute_operator_unleased(
+            repo, run_id, task_index=task_index,
+            attempt_coordinator=attempt_coordinator,
+            guarded_attempt=None,
+            authority_receipt=authority_receipt,
+            authority_attempt=authority_attempt,
+            admission_fence=admission_fence,
+            owned_process_registry=owned_process_registry,
+            owned_task_id=owned_task_id,
+            provider_worker=provider_worker,
+        )
+
+    contract = _load_json(run_dir / "task-contract.json")
+    plan = _load_json(run_dir / "plan.json")
+    tasks = list(contract.get("tasks") or [])
+    if task_index < 1 or task_index > len(tasks):
+        raise ValueError(f"task index out of range: {task_index}")
+    step = (plan.get("steps") or [])[task_index - 1]
+    targets = [
+        str(path) for path in (step.get("candidate_targets") or [])
+        if str(path).strip()
+    ]
+    task = tasks[task_index - 1]
+    task_id = str(task.get("id") or f"{run_id}-task-{task_index}")
+    worker_id = f"tick-{run_id}-{task_index}"
+    # ``planning-receipt.json`` authorizes the armed run, while ``state.attempts``
+    # counts every task mutation in that run.  A direct tick for task 2 therefore
+    # may have a local execution attempt of 2 but must still validate against the
+    # run-level authority attempt minted during arm (normally 1).  Batch dispatch
+    # supplies this value explicitly; direct ticks need to recover it here.
+    if authority_attempt is None:
+        planning_receipt = _load_json(run_dir / "planning-receipt.json")
+        authority_attempt = max(1, int(planning_receipt.get("attempt") or 1))
+    mapper_operations, mapper_attempt = _claim_mapper_operation_attempt(
+        Path(status["manifest"]["repo"]).resolve(),
+        run_id=run_id,
+        task_index=task_index,
+        task_id=task_id,
+        worker_id=worker_id,
+        targets=targets,
+    )
+    try:
+        result = _execute_operator_unleased(
+            repo, run_id, task_index=task_index,
+            attempt_coordinator=attempt_coordinator,
+            guarded_attempt=mapper_attempt,
+            authority_receipt=authority_receipt,
+            authority_attempt=authority_attempt,
+            admission_fence=admission_fence,
+            owned_process_registry=owned_process_registry,
+            owned_task_id=owned_task_id,
+            provider_worker=provider_worker,
+        )
+    except Exception:
+        try:
+            mapper_operations.release(mapper_attempt.lease)
+        except Exception:
+            pass
+        raise
+
+    result_state = result.get("state") or {}
+    operator_state = result_state.get("operator") or {}
+    execution_state = str(operator_state.get("execution_state") or "")
+    operator_receipt = str(operator_state.get("receipt") or "")
+    evidence_receipt = str((result_state.get("evidence") or {}).get("receipt") or "")
+    completed = bool(operator_state.get("ready")) and execution_state in {"applied", "no_change"}
+    completion_payload = {
+        "run_id": run_id,
+        "task_id": task_id,
+        "task_index": task_index,
+        "operator_receipt": operator_receipt,
+        "evidence_receipt": evidence_receipt,
+        "status": "completed" if completed else "failed",
+    }
+    try:
+        completion = mapper_operations.complete(
+            mapper_attempt.lease,
+            status="completed" if completed else "failed",
+            receipt=completion_payload,
+        )
+    except Exception:
+        try:
+            mapper_operations.release(mapper_attempt.lease)
+        except Exception:
+            pass
+        raise
+    completion_path = run_dir / f"mapper-operation-completion-{task_index}.json"
+    _write_json(completion_path, {
+        "schema": "simplicio.loop.mapper-operation-completion/v1",
+        "status": "completed" if completed else "failed",
+        "run_id": run_id,
+        "task_id": task_id,
+        "task_index": task_index,
+        "worker_id": worker_id,
+        "attempt_id": mapper_attempt.lease.attempt_id,
+        "lease_id": mapper_attempt.lease.lease_id,
+        "fence_token": mapper_attempt.lease.fence_token,
+        "operator": completion_payload,
+        "mapper": completion,
+    })
+    result["mapper_operation_completion"] = str(completion_path)
+    return result
 
 
 def verify_run(repo: str, run_id: str) -> Dict[str, Any]:
@@ -5317,6 +5826,7 @@ def verify_run(repo: str, run_id: str) -> Dict[str, Any]:
         _write_json(run_dir / "state.json", state)
         _transition(run_dir, state, "blocked", "quality matrix gate rejected the run", receipt=str(run_dir / "quality-matrix.json"))
         return read_status(repo, run_id)
+    _persist_external_completion_response(run_dir)
     _oracle_matrix = _oracle.evaluate_matrix(str(run_dir / "loop"), str(run_dir))
     if not _oracle_matrix.get("parity") or not all(a["ready"] for a in _oracle_matrix.get("adapters", [])):
         state = read_status(repo, run_id)["state"]
@@ -5328,6 +5838,7 @@ def verify_run(repo: str, run_id: str) -> Dict[str, Any]:
         _transition(run_dir, state, "blocked", "completion oracle rejected the run", receipt=str(run_dir / "oracle-matrix.json"))
         return read_status(repo, run_id)
     try:
+        _ensure_verified_loop_journal(run_dir)
         loop_execution = publish_loop_execution_receipt(
             repo=repo_path,
             run_dir=run_dir,
@@ -6919,6 +7430,7 @@ def dispatch_operator_batch(
     stop_requested: Optional[Callable[[], bool]] = None,
     owned_cancel: Optional[Callable[[str], Any]] = None,
     physical_monitor_kwargs: Optional[Mapping[str, Any]] = None,
+    provider_worker: str | None = None,
 ) -> Dict[str, Any]:
     """Continuously dispatch real operator workers and refill freed slots.
 
@@ -6931,12 +7443,16 @@ def dispatch_operator_batch(
     has no successful receipt.
     """
     normalized = [_operator_dispatch_item(item) for item in items]
-    normalized = _ordered_dispatch_items(normalized)
-    prism_enabled = len(normalized) > 3
-    has_dependencies = any(_item_dependencies(item) for item in normalized)
+    if provider_worker is not None:
+        selected_provider_worker = str(provider_worker).strip().lower()
+        for item in normalized:
+            item["provider_worker"] = selected_provider_worker
     keys = {(item["repo"], item["run_id"], item["task_index"]) for item in normalized}
     if len(keys) != len(normalized):
         raise ValueError("operator dispatch contains duplicate repo/run/task items")
+    normalized = _ordered_dispatch_items(normalized)
+    prism_enabled = len(normalized) > 3
+    has_dependencies = any(_item_dependencies(item) for item in normalized)
 
     # Issue #288 cross-process recovery: load the journal *before* preflight so a resumed
     # batch can tell "already durably succeeded" items apart from ones still needing a fresh

@@ -139,7 +139,12 @@ def build_progress(state: Mapping[str, Any], *, run_dir: str | Path | None = Non
     root = Path(run_dir) if run_dir else None
     phase = str(state.get("phase") or "intake").lower()
     completion = _completion(root, state)
-    ready = bool(completion.get("ready")) and str(completion.get("verdict") or "").upper() in {"COMPLETE", "DRAINED"}
+    # ``verify_run`` records the independently measured terminal verdict as
+    # ``VERIFIED``; older oracle callers use ``COMPLETE``/``DRAINED``.  All three
+    # are terminal only when the receipt explicitly says it is ready.
+    ready = bool(completion.get("ready")) and str(completion.get("verdict") or "").upper() in {
+        "COMPLETE", "DRAINED", "VERIFIED",
+    }
     evidence = dict(state.get("evidence") or {})
     watcher = dict(state.get("watcher") or {})
     execution_route = dict(
