@@ -3705,6 +3705,17 @@ def _extract_declared_task_target(task_text: str, repo_path: Path) -> List[str]:
     return _extract_repo_file_hints(match.group(1), repo_path)
 
 
+def _is_creation_task_type(value: Any) -> bool:
+    """Recognize the task-type spellings accepted by the Markdown contract."""
+    return str(value or "").strip().casefold() in {
+        "creation",
+        "create",
+        "new",
+        "criação",
+        "criacao",
+    }
+
+
 def _task_mapper_context(mapper_payload: Mapping[str, Any], task_index: int) -> Dict[str, Any]:
     """Return one task's Mapper envelope, with a single-task compatibility adapter."""
     contexts = mapper_payload.get("task_contexts") or []
@@ -3864,8 +3875,7 @@ def _build_plan_with_hints(tasks: List[Dict[str, Any]], mapper_payload: Dict[str
                 path for path in data["targets"]
                 if path in declared_targets
                 and not (repo_path / path).exists()
-                and str((task.get("identity") or {}).get("type") or "").strip().lower()
-                in {"creation", "create", "new"}
+                and _is_creation_task_type((task.get("identity") or {}).get("type"))
             ],
             "rule_ids": rule_ids,
             "steps": task_steps,

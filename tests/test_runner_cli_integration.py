@@ -766,6 +766,39 @@ def test_build_plan_uses_mapper_summary_hash_and_task_scoped_creation_targets(tm
     assert plan["steps"][1]["to_create"] == []
 
 
+def test_build_plan_recognizes_portuguese_creation_task_type(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tasks = [{
+        "identity": {"system": "Simplicio", "feature": "damas", "type": "criação"},
+        "original_text": "Target: site/checkers.html",
+        "scenarios": [{"id": "S1", "title": "creation", "verification_intent": "file exists"}],
+        "rules": [],
+    }]
+    state = runner_mod._repo_fingerprint(repo)
+    mapper_payload = {
+        "handoff": {
+            "stdout": {
+                "context_pack": {
+                    "summary": {"pack_hash": "pack-checkers"},
+                    "files": [{"path": "requirements/checkers-tasks.md"}],
+                }
+            }
+        },
+        "repo_state_before": state,
+        "repo_state_after": state,
+        "generated_at": "2026-09-12T00:00:00Z",
+    }
+
+    plan = runner_mod._build_plan_with_hints(
+        tasks, mapper_payload, repo, "Target: site/checkers.html",
+        contract_hash="checkers-contract",
+    )
+
+    assert plan["steps"][0]["candidate_targets"] == ["site/checkers.html"]
+    assert plan["steps"][0]["to_create"] == ["site/checkers.html"]
+
+
 def test_build_plan_uses_filtered_candidate_targets(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
