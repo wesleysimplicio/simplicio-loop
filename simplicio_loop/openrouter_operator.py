@@ -183,7 +183,10 @@ move and update the board/turn; an obviously invalid move must be rejected
 without changing the board or turn. For an editing task preserve
 the existing game and add visible text beginning exactly "Score:", a "Reset
 game" button, visible text beginning exactly "Turn:", and an accessible live
-state message. Use EXACTLY ONE element with role="status" on the page, and
+state message. The editing operation must produce a different complete file
+from the current target; even when the requested features already exist, make
+a small meaningful change related to this edit and never return the exact
+current contents. Use EXACTLY ONE element with role="status" on the page, and
 give that element aria-live="polite" or aria-live="assertive"; do not create a
 second role="status" element. Reset must restore the initial board, score,
 turn, and status.
@@ -338,6 +341,8 @@ def _validate_and_compile(*, proposal: Mapping[str, Any], target: str, target_pa
             raise ValueError("editing plan must replace the complete current target range")
         if not isinstance(operation.get("text"), str) or not operation.get("text", "").strip():
             raise ValueError("replace_range requires non-empty text")
+        if operation.get("text") == current:
+            raise ValueError("editing plan must change target content")
         expected_hash = hashlib.sha256(current.encode("utf-8")).hexdigest()
         if operation.get("file_sha256") != expected_hash:
             raise ValueError("editing plan file_sha256 does not match the current target")

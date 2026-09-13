@@ -101,6 +101,27 @@ def test_edit_proposal_is_bound_to_the_current_file_hash(monkeypatch, tmp_path):
     assert operation["file_sha256"]
 
 
+def test_edit_proposal_cannot_be_a_byte_identical_noop(monkeypatch, tmp_path):
+    _env(monkeypatch)
+    target = tmp_path / "site" / "checkers.html"
+    target.parent.mkdir()
+    current = "<!doctype html>\n<html><body><script>start()</script></body></html>\n"
+    target.write_text(current, encoding="utf-8")
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda request, timeout: _response(json.dumps({"files": {"site/checkers.html": current}})),
+    )
+
+    with pytest.raises(OpenRouterPlanError) as error:
+        request_mechanical_plan(
+            task=_task("edição"), target="site/checkers.html", repo_path=tmp_path,
+            mapper_context={"schema": "mapper"}, run_id="run-noop", task_index=2, attempt=1,
+        )
+
+    assert error.value.receipt["status"] == "proposal_rejected"
+    assert error.value.receipt["error_code"] == "ValueError"
+
+
 def test_invalid_target_is_rejected_before_provider_request(monkeypatch, tmp_path):
     _env(monkeypatch)
     called = []
