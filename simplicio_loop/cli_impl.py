@@ -63,6 +63,7 @@ from .drain import (
     persist_drain_receipt,
 )
 from .runner import (
+    arm_run,
     conduct_run,
     apply_human_decision,
     change_phase,
@@ -252,9 +253,48 @@ def plan(task_path: str, out_path: str) -> int:
     return 0
 
 
+def prepare(repo: str, task_path: str, delivery_arg: str, max_iterations: int) -> int:
+    """Arm and preflight a run without executing a task or calling a provider."""
+    try:
+        delivery_target = delivery.normalize_delivery_target(delivery_arg)
+        armed = arm_run(repo, task_path, delivery_target, max_iterations)
+        manifest = armed.get("manifest") or {}
+        state = armed.get("state") or {}
+        phase = str(state.get("phase") or "blocked")
+        payload = {
+            "schema": "simplicio.prepare-receipt/v1",
+            "status": "prepared" if phase != "blocked" else "blocked",
+            "run_id": str(manifest.get("run_id") or ""),
+            "run_dir": str(armed.get("run_dir") or ""),
+            "phase": phase,
+            "execution_started": False,
+            "mutation_attempted": False,
+            "provider_worker_invoked": False,
+            "next_action": "tick, batch, wave, or prism with the returned run_id" if phase != "blocked" else "inspect blocker",
+        }
+        if phase == "blocked":
+            payload["blockers"] = list(state.get("blockers") or [])
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        payload = {
+            "schema": "simplicio.prepare-receipt/v1",
+            "status": "blocked",
+            "run_id": "",
+            "run_dir": "",
+            "phase": "blocked",
+            "execution_started": False,
+            "mutation_attempted": False,
+            "provider_worker_invoked": False,
+            "reason_code": "prepare_failed",
+            "error": redact_sensitive_text(str(exc)),
+        }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if payload["status"] == "prepared" else 2
+
+
 def run(repo: str, task_path: str, delivery_arg: str, max_iterations: int,
             quality_provider: Optional[str] = None, quality_policy: str = "strict-default",
-            result_file: str = "", required_handshake_fingerprint: str = "") -> int:
+            result_file: str = "", required_handshake_fingerprint: str = "",
+            provider_worker: str | None = None) -> int:
     # Preserve the pre-result-file positional surface used by integrations that
     # passed the fingerprint as the seventh argument.
     if not required_handshake_fingerprint and str(result_file).startswith("sha256:"):
@@ -275,6 +315,7 @@ def run(repo: str, task_path: str, delivery_arg: str, max_iterations: int,
         payload = conduct_run(
             repo, task_path, delivery_target, max_iterations,
             quality_provider=quality_provider, quality_policy=quality_policy,
+            provider_worker=provider_worker,
         )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         outcome = {
@@ -815,9 +856,9 @@ def _persist_prism_wave_receipt(repo: str, run_id: str, payload: dict) -> str:
         return ""
 
 
-def tick(repo: str, run_id: str, task_index: int) -> int:
+def tick(repo: str, run_id: str, task_index: int, provider_worker: str | None = None) -> int:
     try:
-        payload = execute_operator(repo, run_id, task_index=task_index)
+        payload = execute_operator(repo, run_id, task_index=task_index, provider_worker=provider_worker)
     except Exception as exc:
         payload = _dispatch_failure_payload("simplicio.tick-receipt/v1", repo, run_id, exc, [task_index])
     print(__import__("json").dumps(payload, ensure_ascii=False, indent=2))
@@ -825,7 +866,8 @@ def tick(repo: str, run_id: str, task_index: int) -> int:
 
 
 def batch(repo: str, run_id: str, task_indices: str, max_workers: int, retry_budget: int,
-          serial: bool = False, batch_size: Optional[int] = None) -> int:
+          serial: bool = False, batch_size: Optional[int] = None,
+          provider_worker: str | None = None) -> int:
     """Route up to three tasks directly; dispatch larger work in Prism waves."""
     indices = None
     if task_indices.strip():
@@ -853,6 +895,7 @@ def batch(repo: str, run_id: str, task_indices: str, max_workers: int, retry_bud
                 max_workers=max_workers or None,
                 retry_budget=retry_budget,
                 auto_fan_out=not serial,
+                provider_worker=provider_worker,
             )
         except Exception as exc:
             payload = _dispatch_failure_payload("simplicio.operator-batch-receipt/v1", repo, run_id, exc, indices)
@@ -874,6 +917,7 @@ def batch(repo: str, run_id: str, task_indices: str, max_workers: int, retry_bud
                 max_workers=worker_limit,
                 retry_budget=retry_budget,
                 auto_fan_out=True,
+                provider_worker=provider_worker,
             )
         except Exception as exc:
             result = _dispatch_failure_payload("simplicio.operator-batch-receipt/v1", repo, run_id, exc, wave)
@@ -1296,6 +1340,19 @@ def main(argv=None) -> int:
     p_plan.add_argument("--out", default=os.path.join(".simplicio/orchestrator", "task-contract.json"),
                         help="where to write the compiled contract")
 
+    p_prepare = sub.add_parser(
+        "prepare", aliases=["arm"],
+        help="arm and preflight a run without executing tasks or calling a provider",
+    )
+    p_prepare.add_argument("--task", required=True, help="markdown task file")
+    p_prepare.add_argument("--repo", default=".", help="repository root")
+    p_prepare.add_argument(
+        "--delivery", default="verified", choices=DELIVERY_ORDER[1:],
+        metavar="{" + ",".join(DELIVERY_ORDER[1:]) + "}",
+        help="requested delivery target",
+    )
+    p_prepare.add_argument("--max-iterations", type=int, default=12, help="safety cap")
+
     p_run = sub.add_parser("run", help="arm, execute, and independently verify a raw markdown task")
     p_run.add_argument("--task", required=True, help="markdown task file")
     p_run.add_argument("--repo", default=".", help="repository root")
@@ -1308,6 +1365,10 @@ def main(argv=None) -> int:
         ),
     )
     p_run.add_argument("--max-iterations", type=int, default=12, help="safety cap")
+    p_run.add_argument(
+        "--provider-worker", choices=("openrouter",), default=None,
+        help="explicitly authorize the external OpenRouter proposal worker; Dev CLI remains deterministic",
+    )
     p_run.add_argument("--result-file", default="", help="write only simplicio.run-outcome/v1 JSON here")
     p_run.add_argument(
         "--quality-provider", default=None,
@@ -1525,6 +1586,10 @@ def main(argv=None) -> int:
     p_tick.add_argument("--repo", default=".", help="repository root")
     p_tick.add_argument("run_id", help="run id to tick")
     p_tick.add_argument("--task-index", type=int, default=1, help="1-based task index")
+    p_tick.add_argument(
+        "--provider-worker", choices=("openrouter",), default=None,
+        help="explicitly authorize the external OpenRouter proposal worker",
+    )
 
     def _configure_batch_parser(parser):
         parser.add_argument("--repo", default=".", help="repository root")
@@ -1541,6 +1606,10 @@ def main(argv=None) -> int:
             help="worker demand (default/0: automatic; live CPU/RAM/disk admission governs concurrency; positive values set an explicit ceiling)",
         )
         parser.add_argument("--retry-budget", type=int, default=3, help="retries after the first attempt")
+        parser.add_argument(
+            "--provider-worker", choices=("openrouter",), default=None,
+            help="explicitly authorize the external OpenRouter proposal worker",
+        )
         parser.add_argument(
             "--batch-size", type=int, default=None,
             help="Prism wave width (default/minimum: 10; no logical upper bound, e.g. 30)",
@@ -1766,15 +1835,18 @@ def main(argv=None) -> int:
         return _prototype_cli.main(forwarded)
     if command == "plan":
         return plan(args.task, args.out)
+    if command in {"prepare", "arm"}:
+        return prepare(args.repo, args.task, args.delivery, args.max_iterations)
     if command == "run":
         if (args.quality_provider is None and args.quality_policy == "strict-default"
-                and not args.result_file and not args.require_handshake_fingerprint):
+                and not args.result_file and not args.require_handshake_fingerprint
+                and not args.provider_worker):
             # Preserve the original four-argument dispatch contract for
             # embedders that replace ``run`` with the legacy callable.
             return run(args.repo, args.task, args.delivery, args.max_iterations)
         return run(args.repo, args.task, args.delivery, args.max_iterations,
                    args.quality_provider, args.quality_policy, args.result_file,
-                   args.require_handshake_fingerprint)
+                   args.require_handshake_fingerprint, args.provider_worker)
     if command == "orient":
         return orient(args.repo, args.task, args.fast, args.fast_context_budget, args.fast_engine, args.tee,
                       args.targets)
@@ -1853,9 +1925,9 @@ def main(argv=None) -> int:
     if command == "resume":
         return resume(args.repo, args.run_id)
     if command == "tick":
-        return tick(args.repo, args.run_id, args.task_index)
+        return tick(args.repo, args.run_id, args.task_index, args.provider_worker)
     if command in {"batch", "wave", "prism"}:
-        return batch(args.repo, args.run_id, args.task_indices, args.max_workers, args.retry_budget, args.serial, args.batch_size)
+        return batch(args.repo, args.run_id, args.task_indices, args.max_workers, args.retry_budget, args.serial, args.batch_size, args.provider_worker)
     if command == "cancel":
         return cancel(args.repo, args.run_id)
     if command == "checkpoint":

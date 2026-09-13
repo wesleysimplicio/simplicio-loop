@@ -65,6 +65,13 @@ from .loop_execution_receipt import (
 from .runtime_adapter import LoopRuntimeAdapter, RuntimeAdapterError
 from .runtime_bridge import RuntimeBridge
 from .runtime_effect_adapter import EffectRequest, RuntimeEffectAdapter, RuntimeEffectError
+from .provider_worker import (
+    OPENROUTER_MODEL,
+    OpenRouterWorker,
+    ProviderWorkerError,
+    forwarded_environment,
+    proposal_to_mechanical_plan,
+)
 from .hookwall_gate import (
     HookwallBlocked,
     gate_completion,
@@ -174,6 +181,7 @@ class OperatorDispatchItem(TypedDict, total=False):
     distributed_queue: Any
     agent_identity: Mapping[str, Any]
     context_pack: Mapping[str, Any]
+    provider_worker: str
 
 
 class MaintenanceState(TypedDict):
@@ -826,8 +834,10 @@ def _devcli_env(repo_path: Path, base_env: Dict[str, str] | None = None) -> Dict
     selected_devcli = _devcli_command_path()
     if selected_devcli != "simplicio-dev-cli":
         env["PATH"] = f"{Path(selected_devcli).resolve().parent}{os.pathsep}{env.get('PATH', '')}"
-    # Local LLM execution is paused globally; child Dev CLI flows must inherit
-    # the policy and must not receive a local model selector.
+    # The external provider worker receives its credential through its own
+    # allow-listed boundary. Deterministic Dev CLI must never receive the key,
+    # even when the parent shell has it set.
+    env.pop("OPENROUTER_API_KEY", None)
     env["SIMPLICIO_LOCAL_LLM_DISABLED"] = "1"
     if _degraded_mapper_fallback_enabled():
         env["SIMPLICIO_ALLOW_DEGRADED_MAPPER"] = "1"
@@ -1500,6 +1510,128 @@ button { cursor: pointer; }
         "operations": operations,
         "validation": [],
     }
+
+
+
+def _provider_worker_plan(
+    *,
+    task: Mapping[str, Any],
+    context: Mapping[str, Any],
+    run_id: str,
+    task_index: int,
+    attempt: int,
+    root: Path,
+    allowed_paths: Sequence[str],
+    run_dir: Path,
+    provider_worker: str | None = None,
+) -> tuple[Dict[str, Any] | None, Dict[str, Any] | None]:
+    """Obtain one external proposal and convert it through the Dev CLI plan contract.
+
+    Provider selection is explicit. The default path returns ``(None, None)`` so
+    deterministic Dev CLI behavior remains unchanged. A selected worker failure
+    writes a blocked, secret-free receipt and raises; it never falls back to a
+    deterministic or manual edit.
+    """
+    selected = str(provider_worker or os.environ.get("SIMPLICIO_PROVIDER_WORKER") or "").strip().lower()
+    if not selected:
+        return None, None
+    if selected != "openrouter":
+        raise ProviderWorkerError(
+            f"unsupported provider worker {selected!r}",
+            reason_code="provider_worker_unsupported",
+        )
+    receipt_path = run_dir / f"provider-worker-{task_index}-attempt-{max(1, int(attempt))}.json"
+    try:
+        result = OpenRouterWorker().dispatch(
+            task=task,
+            context=context,
+            run_id=run_id,
+            task_index=task_index,
+            allowed_paths=allowed_paths,
+            env=os.environ,
+        )
+        forwarded = forwarded_environment(os.environ)
+        plan = proposal_to_mechanical_plan(
+            result["proposal"],
+            root=root,
+            allowed_paths=allowed_paths,
+            forbidden_literals=(forwarded["OPENROUTER_API_KEY"],),
+        )
+        plan_path = run_dir / f"provider-mechanical-plan-{task_index}-attempt-{max(1, int(attempt))}.json"
+        _write_json(plan_path, plan)
+        proposal = result.get("proposal") if isinstance(result.get("proposal"), Mapping) else {}
+        files = proposal.get("files") if isinstance(proposal, Mapping) else {}
+        receipt = {
+            "schema": "simplicio.provider-worker-receipt/v1",
+            "status": "READY",
+            "provider": "openrouter",
+            "model": OPENROUTER_MODEL,
+            "run_id": str(run_id),
+            "task_index": int(task_index),
+            "attempt": max(1, int(attempt)),
+            "allowed_paths": sorted(str(path) for path in allowed_paths),
+            "proposed_paths": sorted(str(path) for path in files) if isinstance(files, Mapping) else [],
+            "proposal_sha256": str(result.get("response_sha256") or ""),
+            "mechanical_plan_path": str(plan_path),
+            "provider_call_count": int(result.get("provider_call_count") or 1),
+            "usage": result.get("usage"),
+            "usage_status": result.get("usage_status", "unknown"),
+            "input_tokens": result.get("input_tokens"),
+            "output_tokens": result.get("output_tokens"),
+            "cached_tokens": result.get("cached_tokens"),
+            "reasoning_tokens": result.get("reasoning_tokens"),
+            "cost": result.get("cost"),
+            "cost_status": result.get("cost_status", "unknown"),
+            "receipt_path": str(receipt_path),
+        }
+        _write_json(receipt_path, receipt)
+        return plan, receipt
+    except ProviderWorkerError as exc:
+        blocked = {
+            "schema": "simplicio.provider-worker-receipt/v1",
+            "status": "BLOCKED",
+            "provider": "openrouter",
+            "model": OPENROUTER_MODEL,
+            "run_id": str(run_id),
+            "task_index": int(task_index),
+            "attempt": max(1, int(attempt)),
+            "reason_code": exc.reason_code,
+            "error": str(exc),
+            "usage": None,
+            "usage_status": "unknown",
+            "input_tokens": None,
+            "output_tokens": None,
+            "cached_tokens": None,
+            "reasoning_tokens": None,
+            "cost": None,
+            "cost_status": "unknown",
+            "receipt_path": str(receipt_path),
+        }
+        _write_json(receipt_path, blocked)
+        raise
+    except Exception as exc:  # noqa: BLE001 - selected provider is fail-closed
+        blocked = {
+            "schema": "simplicio.provider-worker-receipt/v1",
+            "status": "BLOCKED",
+            "provider": "openrouter",
+            "model": OPENROUTER_MODEL,
+            "run_id": str(run_id),
+            "task_index": int(task_index),
+            "attempt": max(1, int(attempt)),
+            "reason_code": "provider_worker_failed",
+            "error": f"provider worker failed: {type(exc).__name__}",
+            "usage": None,
+            "usage_status": "unknown",
+            "input_tokens": None,
+            "output_tokens": None,
+            "cached_tokens": None,
+            "reasoning_tokens": None,
+            "cost": None,
+            "cost_status": "unknown",
+            "receipt_path": str(receipt_path),
+        }
+        _write_json(receipt_path, blocked)
+        raise ProviderWorkerError(blocked["error"], reason_code=blocked["reason_code"]) from exc
 
 def _hookwall_ledger(
     repo_path: Path,
@@ -4615,7 +4747,8 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
                       authority_attempt: Optional[int] = None,
                       admission_fence: int = 1,
                       owned_process_registry: Any = None,
-                      owned_task_id: str = "") -> Dict[str, Any]:
+                      owned_task_id: str = "",
+                      provider_worker: str | None = None) -> Dict[str, Any]:
     """Execute one planned task through the real dev-cli and persist an immutable receipt.
 
     `run` intentionally arms and dry-runs only.  This explicit tick is the mutation boundary;
@@ -4637,6 +4770,11 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         raise RuntimeError("maintenance deferred: operator execution is blocked until explicit resume")
     run_dir = Path(status["run_dir"])
     repo_path = Path(status["manifest"]["repo"]).resolve()
+    contract = _load_json(run_dir / "task-contract.json")
+    tasks = contract.get("tasks") or []
+    if task_index < 1 or task_index > len(tasks):
+        raise ValueError(f"task index out of range: {task_index}")
+    _assert_task_dependencies_ready(run_dir, tasks, task_index, run_id)
     stack_lock = _verify_run_stack_lock(run_dir)
     storage_route = _verify_storage_route(run_dir)
     _ensure_mapper_operations_store(repo_path, storage_route.get("selected"))
@@ -4661,16 +4799,14 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         "verified_at": _now(),
     }
     _write_json(run_dir / "state.json", status["state"])
-    contract = _load_json(run_dir / "task-contract.json")
-    tasks = contract.get("tasks") or []
-    if task_index < 1 or task_index > len(tasks):
-        raise ValueError(f"task index out of range: {task_index}")
     plan_path = run_dir / "plan.json"
     mapper_path = run_dir / "mapper-context.json"
     operator_path = run_dir / "operator-receipt.json"
     if not plan_path.exists() or not mapper_path.exists() or not operator_path.exists():
         raise RuntimeError("execution requires fresh mapper, plan, and operator preflight receipts")
     plan = _load_json(plan_path)
+    planned_step = (plan.get("steps") or [])[task_index - 1] if task_index <= len(plan.get("steps") or []) else {}
+    _assert_task_dependencies_ready(run_dir, tasks, task_index, run_id, step=planned_step)
     before = _repo_fingerprint(repo_path)
     current = _repo_fingerprint(repo_path)
     planned_state = plan.get("repo_state") or {}
@@ -4889,7 +5025,23 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         if operator_mode == "standalone"
         else ["--task-spec", str(task_spec_path)]
     )
-    mechanical_plan = _mechanical_fixture_plan(task, repo_path)
+    provider_plan, provider_receipt = _provider_worker_plan(
+        task=task,
+        context={
+            "mapper_context": _load_json(mapper_path),
+            "handoff": context_handoff,
+            "plan": plan,
+            "task_spec": task_spec,
+        },
+        run_id=run_id,
+        task_index=task_index,
+        attempt=attempt,
+        root=repo_path,
+        allowed_paths=targets,
+        run_dir=run_dir,
+        provider_worker=provider_worker,
+    )
+    mechanical_plan = provider_plan or _mechanical_fixture_plan(task, repo_path)
     if mechanical_plan is not None:
         mechanical_path = run_dir / f"mechanical-plan-{task_index}.json"
         _write_json(mechanical_path, mechanical_plan)
@@ -5013,6 +5165,15 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         "source": source,
         "context_handoff": context_handoff,
         "provider_config": provider_config,
+        "provider_worker": provider_receipt.get("provider") if provider_receipt else None,
+        "provider_model": provider_receipt.get("model") if provider_receipt else None,
+        "provider_worker_receipt": str(provider_receipt.get("receipt_path") or "") if provider_receipt else "",
+        "provider_usage_status": provider_receipt.get("usage_status", "unknown") if provider_receipt else "unknown",
+        "provider_input_tokens": provider_receipt.get("input_tokens") if provider_receipt else None,
+        "provider_output_tokens": provider_receipt.get("output_tokens") if provider_receipt else None,
+        "provider_cached_tokens": provider_receipt.get("cached_tokens") if provider_receipt else None,
+        "provider_reasoning_tokens": provider_receipt.get("reasoning_tokens") if provider_receipt else None,
+        "provider_cost": provider_receipt.get("cost") if provider_receipt else None,
         "execution_profile": profile,
         "executor_profile": (effect_receipt or {}).get("executor_profile", profile),
         "effect_receipt": effect_receipt,
@@ -5070,6 +5231,15 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         _emit_event(run_dir, state, "test_gate", receipt=str(run_dir / "evidence-receipt.json"),
                     blocker="" if evidence.get("status") == "VERIFIED" else "evidence_unverified",
                     message="test and evidence gate evaluated", status=evidence.get("status", "UNVERIFIED"))
+    if returncode == 0 and not uncertain and hookwall_verified:
+        _write_json(run_dir / f"task-{task_index}-result.json", {
+            "schema": "simplicio.task-result/v1",
+            "run_id": run_id,
+            "task_index": task_index,
+            "status": receipt["execution_state"],
+            "operator_receipt": str(operator_path),
+            "evidence_receipt": str(run_dir / "evidence-receipt.json"),
+        })
     return read_status(repo, run_id)
 
 
@@ -5194,7 +5364,7 @@ def verify_run(repo: str, run_id: str) -> Dict[str, Any]:
     return read_status(repo, run_id)
 
 
-def _conduct_run(repo: str, task_path: str, delivery: str = "verified", max_iterations: int = 12, *, retry_budget: int = 3, quality_provider: Optional[str] = None, quality_policy: str = "strict-default") -> Dict[str, Any]:
+def _conduct_run(repo: str, task_path: str, delivery: str = "verified", max_iterations: int = 12, *, retry_budget: int = 3, quality_provider: Optional[str] = None, quality_policy: str = "strict-default", provider_worker: str | None = None) -> Dict[str, Any]:
     """Arm, execute, and independently verify one run as one durable operation.
 
     Issue #279: this boundary must never leave a run partially armed.  Either the full
@@ -5220,6 +5390,7 @@ def _conduct_run(repo: str, task_path: str, delivery: str = "verified", max_iter
             max_workers=None,
             retry_budget=retry_budget,
             auto_fan_out=None,
+            provider_worker=provider_worker,
         )
     except (OSError, TypeError, ValueError, RuntimeError) as exc:
         status = read_status(repo, run_id)
@@ -5323,10 +5494,11 @@ def _conduct_run(repo: str, task_path: str, delivery: str = "verified", max_iter
     return verify_run(repo, run_id)
 
 
-def conduct_run(repo: str, task_path: str, delivery: str = "verified", max_iterations: int = 12, *, retry_budget: int = 3, quality_provider: Optional[str] = None, quality_policy: str = "strict-default") -> Dict[str, Any]:
+def conduct_run(repo: str, task_path: str, delivery: str = "verified", max_iterations: int = 12, *, retry_budget: int = 3, quality_provider: Optional[str] = None, quality_policy: str = "strict-default", provider_worker: str | None = None) -> Dict[str, Any]:
     """Conduct a run and attach its public Completion-Oracle-derived outcome."""
     status = _conduct_run(repo, task_path, delivery, max_iterations, retry_budget=retry_budget,
-                          quality_provider=quality_provider, quality_policy=quality_policy)
+                          quality_provider=quality_provider, quality_policy=quality_policy,
+                          provider_worker=provider_worker)
     from .run_outcome import persist_run_outcome
     status["outcome"] = persist_run_outcome(status)
     return status
@@ -5798,6 +5970,133 @@ def _release_shared_context(item: Mapping[str, Any], worktree_queue: Any, *, for
             pass
 
 
+
+def _dependency_references(value: Any) -> list[str]:
+    if isinstance(value, Mapping):
+        value = value.get("items") or value.get("depends_on") or ()
+    if isinstance(value, str):
+        value = [part.strip() for part in value.split(",")]
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _task_dependency_references(task: Mapping[str, Any], step: Mapping[str, Any] | None = None) -> tuple[str, ...]:
+    values: list[str] = []
+    for source in (task, step or {}):
+        raw = source.get("depends_on") or source.get("dependencies") or ()
+        values.extend(_dependency_references(raw))
+    return tuple(dict.fromkeys(values))
+
+
+def _task_aliases(task: Mapping[str, Any], index: int, run_id: str) -> set[str]:
+    identity = task.get("identity") if isinstance(task.get("identity"), Mapping) else {}
+    return {
+        str(value).strip()
+        for value in (
+            task.get("id"), identity.get("id"), identity.get("system"), identity.get("title"),
+            index, f"task-{index}", f"{run_id}-task-{index}",
+        )
+        if str(value).strip()
+    }
+
+
+def _assert_task_dependencies_ready(
+    run_dir: Path,
+    tasks: Sequence[Mapping[str, Any]],
+    task_index: int,
+    run_id: str,
+    *,
+    step: Mapping[str, Any] | None = None,
+) -> None:
+    """Reject a tick that arrives before every declared predecessor completed."""
+    aliases: dict[str, int] = {
+        alias: index
+        for index, task in enumerate(tasks, start=1)
+        for alias in _task_aliases(task, index, run_id)
+    }
+    references = _task_dependency_references(tasks[task_index - 1], step)
+    for reference in references:
+        dependency_index = aliases.get(reference)
+        if dependency_index is None:
+            raise RuntimeError(
+                f"task dependency is not part of the run: task {task_index}->{reference}"
+            )
+        if dependency_index == task_index:
+            raise RuntimeError(f"task cannot depend on itself: task {task_index}")
+        marker = run_dir / f"task-{dependency_index}-result.json"
+        if not marker.is_file():
+            raise RuntimeError(
+                f"task dependency is not completed: task {task_index} requires task {dependency_index}"
+            )
+        try:
+            result = _load_json(marker)
+        except (OSError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"task dependency result is unreadable: task {dependency_index}"
+            ) from exc
+        if result.get("status") not in {"applied", "no_change", "succeeded", "completed"}:
+            raise RuntimeError(
+                f"task dependency did not complete successfully: task {dependency_index}"
+            )
+
+
+def _item_dependencies(item: Mapping[str, Any]) -> tuple[str, ...]:
+    raw_spec = item.get("task_spec")
+    spec: Mapping[str, Any] = raw_spec if isinstance(raw_spec, Mapping) else {}
+    raw = spec.get("depends_on") or spec.get("dependencies") or item.get("depends_on") or ()
+    return tuple(dict.fromkeys(_dependency_references(raw)))
+
+
+def _ordered_dispatch_items(items: Iterable[Mapping[str, Any]]) -> list[Dict[str, Any]]:
+    """Return a stable topological order and fail closed on unknown/cyclic edges."""
+    rows = [dict(item) for item in items]
+    by_id: dict[str, Dict[str, Any]] = {}
+    by_index: dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        task_id = str(row.get("task_id") or "").strip()
+        if not task_id or task_id in by_id:
+            raise ValueError("operator dispatch task ids must be unique and non-empty")
+        by_id[task_id] = row
+        if row.get("task_index") is not None:
+            by_index[str(row["task_index"])] = row
+    dependencies: dict[str, set[str]] = {}
+    for row in rows:
+        task_id = str(row["task_id"])
+        resolved: set[str] = set()
+        for dependency in _item_dependencies(row):
+            candidate = by_id.get(dependency) or by_index.get(dependency.removeprefix("task-"))
+            if candidate is None:
+                raise ValueError(f"operator dispatch dependency is not in the batch: {task_id}->{dependency}")
+            dependency_id = str(candidate["task_id"])
+            if dependency_id == task_id:
+                raise ValueError(f"operator dispatch task cannot depend on itself: {task_id}")
+            resolved.add(dependency_id)
+        dependencies[task_id] = resolved
+    order = {str(row["task_id"]): index for index, row in enumerate(rows)}
+    ready = [
+        str(row["task_id"])
+        for row in rows
+        if not dependencies[str(row["task_id"])]
+    ]
+    ready.sort(key=order.__getitem__)
+    result: list[Dict[str, Any]] = []
+    while ready:
+        task_id = ready.pop(0)
+        result.append(by_id[task_id])
+        for candidate in rows:
+            candidate_id = str(candidate["task_id"])
+            if task_id in dependencies[candidate_id]:
+                dependencies[candidate_id].remove(task_id)
+                if not dependencies[candidate_id] and candidate_id not in {str(row["task_id"]) for row in result}:
+                    ready.append(candidate_id)
+        ready.sort(key=order.__getitem__)
+    if len(result) != len(rows):
+        unresolved = sorted(task_id for task_id, deps in dependencies.items() if deps)
+        raise ValueError("operator dispatch dependency cycle: " + ", ".join(unresolved))
+    return result
+
+
 def _operator_dispatch_item(item: Mapping[str, Any]) -> Dict[str, Any]:
     """Normalize one typed operator dispatch item.
 
@@ -5827,6 +6126,8 @@ def _operator_dispatch_item(item: Mapping[str, Any]) -> Dict[str, Any]:
     normalized["isolation"] = str(item.get("isolation") or "worktree")
     if isinstance(item.get("task_spec"), Mapping):
         normalized["task_spec"] = dict(item["task_spec"])
+    if item.get("provider_worker") is not None:
+        normalized["provider_worker"] = str(item.get("provider_worker") or "").strip().lower()
     normalized["admission_fence"] = max(1, int(item.get("admission_fence") or 1))
     normalized["authority_attempt"] = max(1, int(item.get("authority_attempt") or 1))
     normalized["expected_base_ref"] = str(item.get("expected_base_ref") or "")
@@ -6342,6 +6643,7 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
             admission_fence=int(item.get("admission_fence") or 1),
             owned_process_registry=item.get("owned_process_registry"),
             owned_task_id=str(common.get("task_id") or ""),
+            provider_worker=str(item.get("provider_worker") or "") or None,
         )
         state = payload.get("state") or {}
         operator = state.get("operator") or {}
@@ -6629,7 +6931,9 @@ def dispatch_operator_batch(
     has no successful receipt.
     """
     normalized = [_operator_dispatch_item(item) for item in items]
+    normalized = _ordered_dispatch_items(normalized)
     prism_enabled = len(normalized) > 3
+    has_dependencies = any(_item_dependencies(item) for item in normalized)
     keys = {(item["repo"], item["run_id"], item["task_index"]) for item in normalized}
     if len(keys) != len(normalized):
         raise ValueError("operator dispatch contains duplicate repo/run/task items")
@@ -6728,6 +7032,12 @@ def dispatch_operator_batch(
     if effective_workers > 1 and len(candidate_isolation_keys) < len(normalized):
         effective_workers = 1
         serial_fallback_reason = "shared_run_state"
+    if has_dependencies:
+        # A dependent task must observe the predecessor's real checkout and
+        # task-result receipt. Keep the governed lane serial for both direct
+        # parallelism and Prism; the physical governor remains active.
+        effective_workers = 1
+        serial_fallback_reason = "dependency_order"
     retry_budget = max(0, int(retry_budget))
     from .local_capacity import PhysicalAdmissionMonitor
     monitor_kwargs = _physical_monitor_kwargs(physical_monitor_kwargs)
@@ -7376,6 +7686,7 @@ def execute_operator_batch(
     worktree_queue: Any = None,
     auto_fan_out: Optional[bool] = None,
     physical_monitor_kwargs: Optional[Mapping[str, Any]] = None,
+    provider_worker: str | None = None,
 ) -> Dict[str, Any]:
     """Dispatch all (or selected) tasks from one run through the real operator bridge.
 
@@ -7460,7 +7771,16 @@ def execute_operator_batch(
     if not isolated_contexts:
         distributed_queue, agent_identity = _distributed_configuration(repo)
     auto_reason = "explicit_contexts" if isolated_contexts else ""
-    if not isolated_contexts and worktree_queue is None and (auto_fan_out is not False):
+    contract_tasks = list(contract.get("tasks") or [])
+    contract_steps = list(plan.get("steps") or [])
+    has_task_dependencies = any(
+        _task_dependency_references(
+            contract_tasks[index - 1] if 0 < index <= len(contract_tasks) else {},
+            contract_steps[index - 1] if 0 < index <= len(contract_steps) and isinstance(contract_steps[index - 1], Mapping) else {},
+        )
+        for index in indices
+    )
+    if not isolated_contexts and worktree_queue is None and (auto_fan_out is not False) and not has_task_dependencies:
         previous = os.environ.get("SIMPLICIO_LOOP_AUTO_FAN_OUT")
         if auto_fan_out is True:
             os.environ["SIMPLICIO_LOOP_AUTO_FAN_OUT"] = "1"
@@ -7475,34 +7795,56 @@ def execute_operator_batch(
                 else:
                     os.environ["SIMPLICIO_LOOP_AUTO_FAN_OUT"] = previous
         contexts.update(auto_contexts)
+    elif has_task_dependencies:
+        auto_reason = "dependency_order_requires_shared_run"
     items = []
+    runtime_task_ids = {
+        index: str((contexts.get(index) or {}).get("task_id") or f"{run_id}-task-{index}")
+        for index in indices
+    }
+    dependency_aliases = {
+        alias: runtime_task_ids[index]
+        for index, task in enumerate(contract_tasks, start=1)
+        if index in runtime_task_ids
+        for alias in _task_aliases(task, index, run_id)
+    }
     for index in indices:
         context = dict(contexts.get(index) or {})
+        task = contract_tasks[index - 1]
+        step = contract_steps[index - 1] if index <= len(contract_steps) and isinstance(contract_steps[index - 1], Mapping) else {}
+        task_id = runtime_task_ids[index]
+        target_paths = [str(path) for path in (step.get("candidate_targets") or []) if str(path).strip()]
+        task_spec = dict(context.get("task_spec") or {})
+        task_spec.setdefault("id", task_id)
+        task_spec.setdefault("goal", _task_goal(task))
+        task_spec.setdefault("files_affected", target_paths)
+        dependencies = []
+        for dependency in _task_dependency_references(task, step):
+            dependencies.append(dependency_aliases.get(dependency, dependency))
+        dependencies.extend(_item_dependencies({"task_spec": task_spec}))
+        task_spec["depends_on"] = list(dict.fromkeys(str(value) for value in dependencies if str(value).strip()))
         item = {
             "repo": context.get("repo", repo),
             "run_id": context.get("run_id", run_id),
             "task_index": index,
             "worker_id": context.get("worker_id", f"operator-{index}"),
             "isolation_key": context.get("isolation_key"),
-            "task_id": context.get("task_id", f"{run_id}-task-{index}"),
-            "task_spec": context.get("task_spec") or {
-                "id": context.get("task_id", f"{run_id}-task-{index}"),
-                "goal": _task_goal((contract.get("tasks") or [])[index - 1]),
-            },
+            "task_id": task_id,
+            "task_spec": task_spec,
             "isolation": context.get("isolation", "worktree"),
             "authority_attempt": batch_attempt,
         }
+        if provider_worker is not None:
+            item["provider_worker"] = provider_worker
         if distributed_queue is not None:
             item["distributed_queue"] = distributed_queue
             item["agent_identity"] = agent_identity
-            task = (contract.get("tasks") or [])[index - 1]
-            target_paths = (plan.get("steps") or [])[index - 1].get("candidate_targets") or []
             issue_ref = task.get("issue_ref") or contract.get("issue_ref") or ""
             issue_url = task.get("issue_url") or contract.get("issue_url") or ""
             item["context_pack"] = build_context_pack(
                 task_id=item["task_id"], goal=_task_goal(task), identity=agent_identity,
                 acs=[*[(s.get("title") or s.get("id") or "") for s in (task.get("scenarios") or [])]],
-                depends_on=list((task.get("dependencies") or {}).get("items") or []),
+                depends_on=list(task_spec.get("depends_on") or []),
                 allowed_paths=target_paths, source_refs=target_paths,
                 issue_ref=issue_ref, issue_url=issue_url,
             )
@@ -7522,6 +7864,7 @@ def execute_operator_batch(
         worktree_queue=worktree_queue,
         stop_requested=_batch_stop_requested,
         physical_monitor_kwargs=physical_monitor_kwargs,
+        provider_worker=provider_worker,
     )
     lifecycle_result: Dict[str, Any]
     try:
