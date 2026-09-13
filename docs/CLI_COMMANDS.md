@@ -30,6 +30,7 @@ Use the most specific form, such as `simplicio-loop queue top --help` or
 | `task` | Compile, validate, or preview a Markdown task contract. |
 | `prototype` | Route prototype planning and validation commands. |
 | `plan` | Compile a raw task into a frozen contract. |
+| `prepare` / `arm` | Arm and preflight a run without executing tasks or calling a provider; returns a `run_id` for `tick`, `batch`, `wave`, or `prism`. |
 | `run` | Arm, execute, and independently verify a task. |
 | `orient` | Build bounded context through Fast and emit `simplicio.llm-max-speed-orientation/v1` plus a hash-bound `simplicio.loop-orient-receipt/v1`; auto may fall back read-only to Mapper, while required Fast/Rust fails closed. |
 | `retrieve` | Retrieve and verify a tee-cache result. |
@@ -76,8 +77,27 @@ Use the most specific form, such as `simplicio-loop queue top --help` or
 
 ```bash
 simplicio-loop run --task task.md --repo .
+simplicio-loop prepare --task task.md --repo .
+simplicio-loop tick RUN_ID --repo .
 simplicio-loop batch RUN_ID
 ```
+
+`prepare` (also exposed as `arm`) performs the same contract/Mapper/operator
+preflight as arming a run, but does not execute a task or call a provider. Its
+JSON receipt contains the `run_id` needed by the explicit execution commands.
+The default execution worker remains deterministic `simplicio-dev-cli`. An
+external OpenRouter proposal worker is opt-in only:
+
+```bash
+simplicio-loop tick RUN_ID --repo . --provider-worker openrouter
+simplicio-loop batch RUN_ID --provider-worker openrouter
+```
+
+The OpenRouter worker pins `deepseek/deepseek-v4.1-flash`, reads credentials
+only from `OPENROUTER_API_KEY`/`OPENROUTER_BASE_URL`, converts its proposal to a
+`simplicio.mechanical-edit/v1` plan, and sends that plan through Dev CLI. A
+provider failure is blocked; it never falls back to manual or deterministic
+artifact generation.
 
 `run` and `batch` initialize the Mapper-owned operations store when required,
 use the Mapper handoff, reconcile one normal cold-start inspection internally when
