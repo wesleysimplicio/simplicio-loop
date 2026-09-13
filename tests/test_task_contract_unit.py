@@ -6,7 +6,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
 
-from simplicio_loop.task_contract import compile_many, validate_contract
+from simplicio_loop.task_contract import compile_many, compile_task, validate_contract
 
 
 PLANES = """Sistema: PLANES
@@ -138,6 +138,24 @@ def test_external_references_are_wrapped_as_untrusted_envelopes():
     assert task["prototypes"][0]["provenance"]["verified"] is False
     assert task["external_references"][0]["kind"] == "url"
     assert task["external_references"][0]["trust"] == "untrusted"
+
+
+def test_issue_like_id_and_inline_dependency_are_compiled():
+    raw = """Sistema: Simplicio
+Funcionalidade: TASK-CHECKERS-002 — edição
+Tipo: edição
+Depends on: TASK-CHECKERS-001
+
+1. Critérios de Aceite
+Cenário 1: Editar o jogo
+  Dado que o jogo foi criado
+  Quando a edição for aplicada
+  Então o arquivo deve mudar
+"""
+    task = compile_task(raw)
+    assert task["id"] == "TASK-CHECKERS-002"
+    assert task["identity"]["id"] == "TASK-CHECKERS-002"
+    assert task["dependencies"] == {"state": "declared", "items": ["TASK-CHECKERS-001"]}
 
 
 if __name__ == "__main__":
