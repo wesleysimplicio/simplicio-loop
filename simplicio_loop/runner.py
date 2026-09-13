@@ -7442,12 +7442,12 @@ def dispatch_operator_batch(
     has no successful receipt.
     """
     normalized = [_operator_dispatch_item(item) for item in items]
-    normalized = _ordered_dispatch_items(normalized)
-    prism_enabled = len(normalized) > 3
-    has_dependencies = any(_item_dependencies(item) for item in normalized)
     keys = {(item["repo"], item["run_id"], item["task_index"]) for item in normalized}
     if len(keys) != len(normalized):
         raise ValueError("operator dispatch contains duplicate repo/run/task items")
+    normalized = _ordered_dispatch_items(normalized)
+    prism_enabled = len(normalized) > 3
+    has_dependencies = any(_item_dependencies(item) for item in normalized)
 
     # Issue #288 cross-process recovery: load the journal *before* preflight so a resumed
     # batch can tell "already durably succeeded" items apart from ones still needing a fresh
